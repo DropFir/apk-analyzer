@@ -15,7 +15,7 @@
 
 ## 编辑使用
 
-Windows 双击打包后的 `APKBA-Analyzer.exe`，macOS 打开 `APKBA-Analyzer.app`：
+Windows 双击 `dist\APKBA-Analyzer.exe` 单文件发布版，macOS 打开 `APKBA-Analyzer.app`：
 
 1. 把一个 `.apk` 或 `.xapk` 拖到左侧。
 2. 把对应图标拖到右侧。
@@ -58,7 +58,7 @@ Windows：
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
-输出为 `dist\APKBA-Analyzer\APKBA-Analyzer.exe`。
+输出为单文件 `dist\APKBA-Analyzer.exe`。不要运行 `build` 或 `.pyinstaller-work` 目录里的中间 EXE。
 
 macOS：
 

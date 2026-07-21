@@ -18,11 +18,13 @@ $Python = Join-Path $Venv 'Scripts\python.exe'
     --noconfirm `
     --clean `
     --windowed `
-    --onedir `
+    --onefile `
     --name 'APKBA-Analyzer' `
+    --distpath (Join-Path $Root 'dist') `
+    --workpath (Join-Path $Root '.pyinstaller-work') `
     --paths (Join-Path $Root 'src') `
     --collect-data androguard `
     --hidden-import androguard.core.apk `
     (Join-Path $Root 'main.py')
 
-Write-Host "Build complete: $Root\dist\APKBA-Analyzer\APKBA-Analyzer.exe"
+Write-Host "Build complete: $Root\dist\APKBA-Analyzer.exe"

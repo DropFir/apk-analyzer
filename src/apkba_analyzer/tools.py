@@ -10,6 +10,14 @@ from collections.abc import Iterable
 from pathlib import Path
 
 
+def _subprocess_creation_flags() -> int:
+    """Prevent SDK helper tools from opening console windows on Windows."""
+
+    if os.name == "nt":
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
 def _first_existing(candidates: Iterable[Path | None]) -> Path | None:
     for candidate in candidates:
         if candidate and candidate.is_file():
@@ -113,6 +121,7 @@ def run_tool(tool: Path, args: list[str], timeout: int = 120) -> subprocess.Comp
         command,
         check=False,
         capture_output=True,
+        creationflags=_subprocess_creation_flags(),
         text=True,
         encoding="utf-8",
         errors="replace",

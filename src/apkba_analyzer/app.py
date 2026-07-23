@@ -6,10 +6,11 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from apkba_analyzer.device import AdbClient, scan_create_and_prepare
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.scanner import SUPPORTED_IMAGES, SUPPORTED_SOURCES, scan_package
 
@@ -105,6 +107,45 @@ class ScanWorker(QObject):
             self.failed.emit(str(error), traceback.format_exc())
 
 
+class DeviceWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(AdbClient().list_devices())
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
+class PrepareWorker(QObject):
+    progress = Signal(int, str)
+    succeeded = Signal(object, object, str)
+    failed = Signal(str, str)
+
+    def __init__(self, source: str, icon: str, output: str, serial: str):
+        super().__init__()
+        self.source = source
+        self.icon = icon
+        self.output = output
+        self.serial = serial
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report, bundle, result = scan_create_and_prepare(
+                self.source,
+                self.icon,
+                self.output,
+                self.serial,
+                progress=lambda value, message: self.progress.emit(value, message),
+            )
+            self.succeeded.emit(report, result, str(bundle))
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -112,7 +153,7 @@ class MainWindow(QMainWindow):
         self.icon_path = ""
         self.bundle_path = ""
         self.thread: QThread | None = None
-        self.worker: ScanWorker | None = None
+        self.worker: QObject | None = None
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
         self.resize(1080, 760)
@@ -182,16 +223,36 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(choose_output)
         layout.addWidget(output_frame)
 
+        device_frame = QFrame()
+        device_frame.setObjectName("panel")
+        device_layout = QHBoxLayout(device_frame)
+        device_layout.setContentsMargins(20, 16, 20, 16)
+        device_label = QLabel("取证手机")
+        device_label.setObjectName("fieldLabel")
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("正在检查 USB 调试设备…", None)
+        self.device_combo.setMinimumWidth(360)
+        self.refresh_button = QPushButton("刷新设备")
+        self.refresh_button.clicked.connect(self._refresh_devices)
+        device_layout.addWidget(device_label)
+        device_layout.addWidget(self.device_combo, 1)
+        device_layout.addWidget(self.refresh_button)
+        layout.addWidget(device_frame)
+
         action_row = QHBoxLayout()
-        trust = QLabel("● 离线扫描 · 不执行 APK · 不改动原件")
+        trust = QLabel("● 静态扫描不联网 · 取证模式只操作明确选择的手机")
         trust.setObjectName("trust")
         self.scan_button = QPushButton("开始扫描并生成交接包")
-        self.scan_button.setObjectName("primaryButton")
         self.scan_button.setMinimumHeight(48)
         self.scan_button.clicked.connect(self._start_scan)
+        self.prepare_button = QPushButton("连接手机并开始取证")
+        self.prepare_button.setObjectName("primaryButton")
+        self.prepare_button.setMinimumHeight(48)
+        self.prepare_button.clicked.connect(self._start_prepare)
         action_row.addWidget(trust)
         action_row.addStretch()
         action_row.addWidget(self.scan_button)
+        action_row.addWidget(self.prepare_button)
         layout.addLayout(action_row)
 
         self.progress = QProgressBar()
@@ -226,6 +287,7 @@ class MainWindow(QMainWindow):
 
         self.source_card.path_changed.connect(self._set_source)
         self.icon_card.path_changed.connect(self._set_icon)
+        QTimer.singleShot(0, self._refresh_devices)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -247,6 +309,10 @@ class MainWindow(QMainWindow):
             }
             QLabel#fieldLabel { font-weight: 700; }
             QLineEdit {
+                background: #f8fafc; border: 1px solid #d8e1ec;
+                border-radius: 8px; padding: 9px;
+            }
+            QComboBox {
                 background: #f8fafc; border: 1px solid #d8e1ec;
                 border-radius: 8px; padding: 9px;
             }
@@ -305,7 +371,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "还差一步", "请选择 APK/XAPK、图标和输出位置。")
             return
         self.settings.setValue("output", output)
-        self.scan_button.setEnabled(False)
+        self._set_busy(True)
         self.open_button.setVisible(False)
         self.bundle_path = ""
         self.progress.setValue(1)
@@ -323,8 +389,96 @@ class MainWindow(QMainWindow):
         self.worker.succeeded.connect(self.thread.quit)
         self.worker.failed.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
+
+    def _start_prepare(self) -> None:
+        output = self.output_edit.text().strip()
+        serial = self.device_combo.currentData()
+        if not self.source_path or not self.icon_path or not output:
+            QMessageBox.information(self, "还差一步", "请选择 APK/XAPK、图标和输出位置。")
+            return
+        if not serial:
+            QMessageBox.information(
+                self,
+                "请选择手机",
+                "请连接手机、开启 USB 调试并授权，然后刷新并选择状态为“已授权”的设备。",
+            )
+            return
+        self.settings.setValue("output", output)
+        self._set_busy(True)
+        self.open_button.setVisible(False)
+        self.bundle_path = ""
+        self.progress.setValue(1)
+        self.status_badge.setText("准备中")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText("正在静态扫描；通过后才会安装到所选手机…")
+        self.detail_label.clear()
+        self.thread = QThread(self)
+        self.worker = PrepareWorker(
+            self.source_path,
+            self.icon_path,
+            output,
+            str(serial),
+        )
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.succeeded.connect(self._on_prepare_success)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def _refresh_devices(self) -> None:
+        if self.thread and self.thread.isRunning():
+            return
+        self.device_combo.clear()
+        self.device_combo.addItem("正在检查 USB 调试设备…", None)
+        self.refresh_button.setEnabled(False)
+        self.thread = QThread(self)
+        self.worker = DeviceWorker()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.succeeded.connect(self._on_devices)
+        self.worker.failed.connect(self._on_device_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_devices(self, devices: object) -> None:
+        self.refresh_button.setEnabled(True)
+        self.device_combo.clear()
+        rows = list(devices)
+        online_count = 0
+        for row in rows:
+            serial = row.get("serial", "")
+            state = row.get("state", "")
+            model = str(row.get("model") or row.get("device") or "Android 设备").replace("_", " ")
+            if state == "device":
+                self.device_combo.addItem(f"{model} · 已授权 · {serial}", serial)
+                online_count += 1
+            else:
+                state_text = "等待手机授权" if state == "unauthorized" else state
+                self.device_combo.addItem(f"{model} · {state_text} · {serial}", None)
+        if not rows:
+            self.device_combo.addItem("未发现设备：请连接数据线并开启 USB 调试", None)
+        elif not online_count:
+            self.device_combo.insertItem(0, "没有已授权设备，请查看手机弹窗", None)
+
+    @Slot(str, str)
+    def _on_device_failure(self, message: str, _detail: str) -> None:
+        self.refresh_button.setEnabled(True)
+        self.device_combo.clear()
+        self.device_combo.addItem(f"ADB 不可用：{message}", None)
 
     @Slot(int, str)
     def _on_progress(self, value: int, message: str) -> None:
@@ -333,7 +487,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object, str)
     def _on_success(self, report: object, bundle: str) -> None:
-        self.scan_button.setEnabled(True)
+        self._set_busy(False)
         result = dict(report)
         status = result.get("status")
         app = result.get("app") or {}
@@ -364,13 +518,48 @@ class MainWindow(QMainWindow):
         self.bundle_path = bundle
         self.open_button.setVisible(bool(bundle))
 
+    @Slot(object, object, str)
+    def _on_prepare_success(self, report: object, result: object, bundle: str) -> None:
+        self._set_busy(False)
+        scan_result = dict(report)
+        prepare_result = dict(result)
+        app = scan_result.get("app") or {}
+        signature = scan_result.get("signature") or {}
+        self.status_badge.setText("等待人工取证")
+        self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+        self.status_text.setText("安装和启动准备已完成。现在请在手机上手动截图和录屏。")
+        certificate = ", ".join(signature.get("certificateSha256") or []) or "未确认"
+        self.detail_label.setText(
+            f"应用：{app.get('applicationLabel') or '未确认'}\n"
+            f"包名：{app.get('packageName') or '未确认'}\n"
+            f"手机：{prepare_result.get('deviceModel') or '未确认'}\n"
+            f"启动结果：{prepare_result.get('launchStatus') or '未确认'}\n"
+            f"前台页面：{prepare_result.get('focusedActivity') or '未确认'}\n"
+            f"签名证书 SHA-256：{certificate}\n\n"
+            "下一步：在手机上手动完成应用 UI 截图和一段录屏。\n"
+            "完成后把整个交接文件夹交给 Agent1，并回复“好了”；"
+            "如果截图或录屏黑屏/被禁止，请在“好了”后明确写出来。"
+        )
+        self.bundle_path = bundle
+        self.open_button.setVisible(True)
+
     @Slot(str, str)
     def _on_failure(self, message: str, detail: str) -> None:
-        self.scan_button.setEnabled(True)
+        self._set_busy(False)
         self.status_badge.setText("失败")
         self.status_badge.setStyleSheet("background:#fee8e7;color:#a52a24")
         self.status_text.setText(message)
         self.detail_label.setText(detail)
+
+    def _set_busy(self, busy: bool) -> None:
+        self.scan_button.setEnabled(not busy)
+        self.prepare_button.setEnabled(not busy)
+        self.refresh_button.setEnabled(not busy)
+
+    @Slot()
+    def _thread_finished(self) -> None:
+        self.worker = None
+        self.thread = None
 
     def _open_bundle(self) -> None:
         if self.bundle_path:

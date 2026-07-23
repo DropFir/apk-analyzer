@@ -3,6 +3,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$ROOT/.venv-build"
+ADB="$(command -v adb || true)"
+if [[ -z "$ADB" ]]; then
+  for candidate in \
+    "${ANDROID_SDK_ROOT:-}/platform-tools/adb" \
+    "${ANDROID_HOME:-}/platform-tools/adb" \
+    "$HOME/Library/Android/sdk/platform-tools/adb"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      ADB="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$ADB" || ! -f "$ADB" ]]; then
+  echo "adb was not found. Install official Android Platform Tools before building." >&2
+  exit 1
+fi
 
 if [[ ! -d "$VENV" ]]; then
   python3 -m venv "$VENV"
@@ -19,6 +35,7 @@ fi
   --paths "$ROOT/src" \
   --collect-data androguard \
   --hidden-import androguard.core.apk \
+  --add-binary "$ADB:platform-tools" \
   "$ROOT/main.py"
 
 echo "Build complete: $ROOT/dist/APKBA-Analyzer.app"

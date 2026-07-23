@@ -1,6 +1,6 @@
 # APKBA Analyzer
 
-给非技术编辑使用的离线 APK/XAPK intake 工具。拖入安装包和应用图标后，它会完成静态检查并生成一个可直接交给 Agent1 的文件夹。
+给非技术编辑使用的 APK/XAPK intake 与取证准备工具。拖入安装包和应用图标后，它可以只完成静态检查，也可以连接一台明确选择的 Android 手机，自动执行 Agent1 在“好了”之前的安装、启动和媒体基线步骤。
 
 ## 第一版会检查什么
 
@@ -11,7 +11,7 @@
 - XAPK 的 `manifest.json`、base APK、split 文件、各 split SHA-256 及签名一致性。
 - 图标格式、尺寸和是否为正方形。
 
-工具默认不联网、不安装 APK、不执行 APK，也不修改原件。它不是杀毒软件，不会给出“安全”或“官方来源”的承诺。
+静态扫描不联网、不安装 APK、不执行 APK，也不修改原件。只有点击“连接手机并开始取证”后，工具才会把扫描通过的安装包安装到下拉框中明确选择的手机；它不会自动截图或录屏。工具不是杀毒软件，不会给出“安全”或“官方来源”的承诺。
 
 ## 编辑使用
 
@@ -19,10 +19,12 @@ Windows 双击 `dist\APKBA-Analyzer.exe` 单文件发布版，macOS 打开 `APKB
 
 1. 把一个 `.apk` 或 `.xapk` 拖到左侧。
 2. 把对应图标拖到右侧。
-3. 选择输出位置，点击“开始扫描并生成交接包”。
-4. 扫描通过后点击“打开交接包”，把整个文件夹交给 Agent1。
+3. 选择输出位置，连接手机并开启“开发者选项 → USB 调试”，在手机弹窗中授权电脑。
+4. 只需要静态交接包时，点击“开始扫描并生成交接包”。
+5. 需要完成取证准备时，从“取证手机”中明确选择设备，再点击“连接手机并开始取证”。
+6. 工具安装并启动应用、记录截图/录屏基线后会停止。编辑在手机上手动截图和录屏，然后把整个文件夹交给 Agent1 并回复“好了”。如果截图或录屏黑屏/被禁止，需要在“好了”后明确说明。
 
-交接目录保持扁平：一个原始 APK/XAPK、一个 `icon.*`、`scan_report.json`、`agent1_handoff.json`、浏览器可打开的 `scan_summary.html` 和说明文件。Agent1 仍负责安装、启动、人工截图/录屏和最终证据包验证。
+交接目录保持扁平：一个原始 APK/XAPK、一个 `icon.*`、`scan_report.json`、`agent1_handoff.json`、浏览器可打开的 `scan_summary.html` 和说明文件。取证准备模式还会生成与 Agent1 兼容的 `.apkba-pending-session.json`；Agent1 从人工截图/录屏完成后的验证阶段继续。
 
 ## 本地开发（Windows）
 
@@ -43,6 +45,17 @@ python -m venv .venv
   --output "E:\path\intake-output"
 ```
 
+只读列出设备与指定设备取证准备：
+
+```powershell
+.\.venv\Scripts\python.exe main.py devices
+.\.venv\Scripts\python.exe main.py prepare `
+  --source "E:\path\app.xapk" `
+  --icon "E:\path\icon.png" `
+  --output "E:\path\intake-output" `
+  --serial "从 devices 输出中复制的序列号"
+```
+
 运行测试：
 
 ```powershell
@@ -58,7 +71,7 @@ Windows：
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
-输出为单文件 `dist\APKBA-Analyzer.exe`。不要运行 `build` 或 `.pyinstaller-work` 目录里的中间 EXE。
+输出为单文件 `dist\APKBA-Analyzer.exe`，其中包含官方 Android Platform Tools 的电脑端 ADB。其他 Windows 电脑只需这个 EXE；手机端仍需开启 USB 调试并授权。不要运行 `build` 或 `.pyinstaller-work` 目录里的中间 EXE。
 
 macOS：
 
@@ -67,7 +80,7 @@ chmod +x scripts/*.sh
 ./scripts/build-macos.sh
 ```
 
-输出为 `dist/APKBA-Analyzer.app`。构建必须在目标系统本机执行；Windows 不能直接生成 macOS `.app`。
+输出为 `dist/APKBA-Analyzer.app`，并会嵌入构建机上的官方 ADB。构建必须在目标系统本机执行；Windows 不能直接生成 macOS `.app`。
 
 ## Android 工具增强
 

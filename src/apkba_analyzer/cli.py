@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from apkba_analyzer.device import AdbClient, scan_create_and_prepare
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.models import ScanFailure
 from apkba_analyzer.scanner import scan_package
@@ -21,6 +22,14 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--output", required=True, type=Path)
     scan.add_argument("--profile", choices=("standard", "quick"), default="standard")
     scan.add_argument("--report-only", action="store_true")
+    prepare = subparsers.add_parser(
+        "prepare", help="scan, install on one explicit device, launch, and create media baseline"
+    )
+    prepare.add_argument("--source", required=True, type=Path)
+    prepare.add_argument("--icon", required=True, type=Path)
+    prepare.add_argument("--output", required=True, type=Path)
+    prepare.add_argument("--serial", required=True)
+    subparsers.add_parser("devices", help="list USB-debugging devices without changing them")
     subparsers.add_parser("gui", help="open the desktop application")
     return parser
 
@@ -39,6 +48,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in (None, "gui"):
         return _run_gui()
     try:
+        if args.command == "devices":
+            print(
+                json.dumps(
+                    {"devices": AdbClient().list_devices()},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "prepare":
+            report, bundle, result = scan_create_and_prepare(
+                args.source,
+                args.icon,
+                args.output,
+                args.serial,
+            )
+            print(
+                json.dumps(
+                    {"report": report, "bundlePath": str(bundle), "prepare": result},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
         report = scan_package(args.source, args.icon, profile=args.profile)
         payload: dict[str, object] = {"report": report}
         if report["status"] != "blocked" and not args.report_only:

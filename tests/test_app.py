@@ -44,6 +44,7 @@ def test_main_window_uses_landscape_layout(
     assert window.width() > window.height()
     assert window.minimumWidth() > window.minimumHeight()
     assert window.input_section.geometry().bottom() < window.workflow_section.geometry().top()
+    assert window.output_frame.geometry().bottom() < window.device_frame.geometry().top()
     assert not hasattr(window, "scan_button")
     assert not hasattr(window, "copy_button")
     window.close()

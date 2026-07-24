@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QThread, QUrl
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
 from apkba_analyzer.app import DropCard, MainWindow, MediaReviewDialog
 
@@ -79,6 +79,10 @@ def test_media_review_is_landscape_and_previews_are_clickable(
 
     assert dialog.width() > dialog.height()
     assert len(dialog.media_previews) == 2
+    assert (
+        dialog.buttons.button(QDialogButtonBox.StandardButton.Cancel).text()
+        == "取消"
+    )
     preview = dialog.media_previews[0]
     clicked: list[str] = []
     preview.clicked.disconnect()

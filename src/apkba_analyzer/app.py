@@ -603,6 +603,7 @@ class MediaReviewDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("生成证据包")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         self.buttons.accepted.connect(self._validate_and_accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)

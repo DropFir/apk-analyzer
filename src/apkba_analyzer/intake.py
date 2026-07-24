@@ -103,7 +103,13 @@ def create_intake_bundle(
 
     try:
         staging.mkdir()
-        portable_source_name = _portable_name(source.stem, "source") + source.suffix.lower()
+        source_format = str((report.get("source") or {}).get("format") or "").lower()
+        portable_suffix = (
+            f".{source_format}"
+            if source_format in {"apk", "xapk", "apkm"}
+            else source.suffix.lower()
+        )
+        portable_source_name = _portable_name(source.stem, "source") + portable_suffix
         source_destination = staging / portable_source_name
         icon_destination = staging / f"icon{icon.suffix.lower()}"
         shutil.copy2(source, source_destination)

@@ -142,6 +142,41 @@ def test_xapk_inventory_and_base_manifest(tmp_path: Path) -> None:
     )
 
 
+def test_xapk_saved_with_apk_extension_is_detected_from_contents(tmp_path: Path) -> None:
+    base = tmp_path / "base.apk"
+    split = tmp_path / "config.arm64_v8a.apk"
+    source = tmp_path / "downloaded_pending.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(base)
+    make_apk(split, MANIFEST.replace("<manifest ", '<manifest split="config.arm64_v8a" '))
+    xapk_manifest = {
+        "xapk_version": 2,
+        "name": "Fixture App",
+        "package_name": "com.example.fixture",
+        "version_name": "2.4.1",
+        "version_code": "241",
+        "split_apks": [
+            {"id": "base", "file": "base.apk"},
+            {"id": "config.arm64_v8a", "file": "config.arm64_v8a.apk"},
+        ],
+    }
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(xapk_manifest))
+        archive.write(base, "base.apk")
+        archive.write(split, "config.arm64_v8a.apk")
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["source"]["format"] == "xapk"
+    assert report["source"]["declaredFormat"] == "apk"
+    assert report["app"]["packageName"] == "com.example.fixture"
+    assert report["xapk"]["baseApk"] == "base.apk"
+    assert any(
+        item["code"] == "source.extension_mismatch" for item in report["findings"]
+    )
+
+
 def test_apkm_inventory_and_base_manifest(tmp_path: Path) -> None:
     base = tmp_path / "base.apk"
     split = tmp_path / "split_config.arm64_v8a.apk"

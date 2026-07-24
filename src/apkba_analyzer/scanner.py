@@ -278,6 +278,29 @@ def _plain_manifest_from_archive(path: Path) -> dict[str, Any] | None:
     return _parse_manifest_xml(data.decode("utf-8-sig", errors="strict"))
 
 
+def _detect_source_format(path: Path) -> str:
+    """Recognize bundle containers whose downloaded extension says APK."""
+
+    declared = path.suffix.lower().lstrip(".")
+    if declared != "apk":
+        return declared
+    try:
+        with zipfile.ZipFile(path) as archive:
+            root_names = {
+                name
+                for name in archive.namelist()
+                if len(PurePosixPath(name).parts) == 1 and not name.endswith("/")
+            }
+    except (OSError, zipfile.BadZipFile):
+        return declared
+    root_apks = {name for name in root_names if name.lower().endswith(".apk")}
+    if "manifest.json" in root_names and root_apks:
+        return "xapk"
+    if "info.json" in root_names and "base.apk" in root_names:
+        return "apkm"
+    return declared
+
+
 def _manifest_with_apkanalyzer(path: Path, tool: Path) -> dict[str, Any]:
     result = run_tool(tool, ["manifest", "print", str(path)])
     if result.returncode != 0 or not result.stdout.strip():
@@ -849,14 +872,28 @@ def scan_package(
         raise ScanFailure("源文件仍像是未完成下载。")
 
     _progress(progress, 10, "计算源文件 SHA-256…")
+    declared_format = source.suffix.lower().lstrip(".")
     source_record = {
         "fileName": source.name,
-        "format": source.suffix.lower().lstrip("."),
+        "format": declared_format,
         "sizeBytes": source.stat().st_size,
         "sha256": _hash_file(source),
     }
     _progress(progress, 22, "检查压缩包结构与完整性…")
     archive_record = _archive_audit(source, deep, findings)
+    source_format = _detect_source_format(source)
+    if source_format != declared_format:
+        source_record["format"] = source_format
+        source_record["declaredFormat"] = declared_format
+        findings.append(
+            Finding(
+                "warning",
+                "source.extension_mismatch",
+                f"文件扩展名是 .{declared_format}，但内容是 {source_format.upper()}；"
+                f"已按 {source_format.upper()} 处理。",
+                f"original={source.name}; detectedFormat={source_format}",
+            )
+        )
     _progress(progress, 35, "验证图标…")
     icon_record = _icon_record(icon, findings)
 
@@ -874,7 +911,7 @@ def scan_package(
 
     if not any(item.severity == "error" for item in findings):
         try:
-            if source.suffix.lower() == ".apk":
+            if source_format == "apk":
                 _progress(progress, 50, "解析 APK manifest…")
                 app, parser_name = _parse_apk_manifest(source, apkanalyzer, findings)
                 if app.get("splitRequired"):
@@ -932,7 +969,7 @@ def scan_package(
                             signature.get("error"),
                         )
                     )
-            elif source.suffix.lower() == ".xapk":
+            elif source_format == "xapk":
                 _progress(progress, 44, "读取 XAPK manifest 与 split 清单…")
                 app, xapk, parser_name, signature = _read_xapk(
                     source, apkanalyzer, apksigner, findings, progress

@@ -36,3 +36,21 @@ def test_bundle_is_flat_portable_and_hash_verified(tmp_path: Path) -> None:
     assert handoff["source"]["path"] == "bundle.apk"
     assert handoff["icon"]["path"] == "icon.png"
     assert ":\\" not in json.dumps(handoff)
+
+
+def test_bundle_copy_uses_detected_source_format_extension(tmp_path: Path) -> None:
+    source = tmp_path / "downloaded_pending.apk"
+    icon = tmp_path / "art.png"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", MANIFEST)
+    Image.new("RGB", (512, 512), "#087763").save(icon)
+    report = scan_package(source, icon, profile="quick")
+    report["source"]["format"] = "xapk"
+
+    bundle = create_intake_bundle(report, source, icon, output)
+
+    assert (bundle / "downloaded_pending.xapk").is_file()
+    handoff = json.loads((bundle / "agent1_handoff.json").read_text(encoding="utf-8"))
+    assert handoff["source"]["path"] == "downloaded_pending.xapk"
+    assert handoff["source"]["format"] == "xapk"

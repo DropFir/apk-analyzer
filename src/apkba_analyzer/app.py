@@ -188,11 +188,17 @@ class ClickableImageLabel(QLabel):
         super().__init__(parent)
         self.image_path = image_path
         self.setFixedSize(preview_size)
+        self.setObjectName("mediaPreview")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("点击查看大图")
         self.setStyleSheet(
-            "background:#101722;border:1px solid #cbd6e5;border-radius:8px"
+            "QLabel#mediaPreview {"
+            "background:#101722;border:2px solid #d9e2ec;border-radius:10px;"
+            "}"
+            "QLabel#mediaPreview:hover {"
+            "border-color:#0d9275;background:#0b1220;"
+            "}"
         )
         pixmap = QPixmap(image_path)
         if pixmap.isNull():
@@ -456,6 +462,7 @@ class MediaReviewDialog(QDialog):
         self.review = review
         self.screenshot_checks: dict[str, QCheckBox] = {}
         self.media_previews: list[ClickableImageLabel] = []
+        self.setObjectName("mediaReviewDialog")
         self.setWindowTitle("确认本次截图与录屏")
         self.resize(1180, 720)
         self.setMinimumSize(940, 600)
@@ -467,15 +474,18 @@ class MediaReviewDialog(QDialog):
         media_layout.setSpacing(14)
 
         screenshot_group = QGroupBox("截图（逐张确认）")
+        screenshot_group.setObjectName("mediaGroup")
         screenshot_layout = QVBoxLayout(screenshot_group)
         screenshot_hint = QLabel("点击任意缩略图可查看大图；只勾选属于本次应用的截图。")
-        screenshot_hint.setStyleSheet("color:#58677d")
+        screenshot_hint.setObjectName("groupHint")
         screenshot_hint.setWordWrap(True)
         screenshot_layout.addWidget(screenshot_hint)
         screenshot_scroll = QScrollArea()
+        screenshot_scroll.setObjectName("mediaScroll")
         screenshot_scroll.setWidgetResizable(True)
         screenshot_scroll.setMinimumHeight(360)
         screenshot_content = QWidget()
+        screenshot_content.setObjectName("mediaCanvas")
         screenshot_rows = QGridLayout(screenshot_content)
         screenshot_rows.setHorizontalSpacing(14)
         screenshot_rows.setVerticalSpacing(16)
@@ -489,6 +499,7 @@ class MediaReviewDialog(QDialog):
             check.setToolTip(remote_path)
             self.screenshot_checks[remote_path] = check
             card = QWidget()
+            card.setObjectName("mediaCard")
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(4, 4, 4, 4)
             card_layout.setSpacing(7)
@@ -512,6 +523,7 @@ class MediaReviewDialog(QDialog):
         self.restriction_edit = QLineEdit()
         self.restriction_edit.setPlaceholderText("正常有截图时留空")
         restriction_button = QPushButton("选择…")
+        restriction_button.setObjectName("browseButton")
         restriction_button.clicked.connect(self._choose_restriction_image)
         restriction_row.addWidget(restriction_label)
         restriction_row.addWidget(self.restriction_edit, 1)
@@ -520,20 +532,23 @@ class MediaReviewDialog(QDialog):
         media_layout.addWidget(screenshot_group, 3)
 
         recording_group = QGroupBox("录屏内容审查")
+        recording_group.setObjectName("mediaGroup")
         recording_layout = QVBoxLayout(recording_group)
         recording_name = QLabel(
             str((review.get("selectedRecording") or {}).get("file_name") or "当前录屏")
         )
-        recording_name.setStyleSheet("font-weight:700")
+        recording_name.setObjectName("groupFileName")
         recording_layout.addWidget(recording_name)
         recording_hint = QLabel("点击代表帧可查看大图；需要时可打开完整录屏核对。")
-        recording_hint.setStyleSheet("color:#58677d")
+        recording_hint.setObjectName("groupHint")
         recording_hint.setWordWrap(True)
         recording_layout.addWidget(recording_hint)
         frame_scroll = QScrollArea()
+        frame_scroll.setObjectName("mediaScroll")
         frame_scroll.setWidgetResizable(True)
         frame_scroll.setMinimumHeight(330)
         frame_content = QWidget()
+        frame_content.setObjectName("mediaCanvas")
         frame_grid = QGridLayout(frame_content)
         frame_grid.setHorizontalSpacing(10)
         frame_grid.setVerticalSpacing(12)
@@ -556,6 +571,7 @@ class MediaReviewDialog(QDialog):
         recording_layout.addWidget(frame_scroll, 1)
         recording_controls = QHBoxLayout()
         open_recording = QPushButton("打开完整录屏")
+        open_recording.setObjectName("softButton")
         open_recording.clicked.connect(self._open_recording)
         recording_controls.addWidget(open_recording)
         recording_controls.addWidget(QLabel("内容分类"))
@@ -580,7 +596,7 @@ class MediaReviewDialog(QDialog):
             else "程序未能自动判断，请回放确认"
         )
         self.suggestion_label = QLabel(suggestion_text)
-        self.suggestion_label.setStyleSheet("color:#7d5800")
+        self.suggestion_label.setObjectName("analysisHint")
         recording_layout.addWidget(self.suggestion_label)
         media_layout.addWidget(recording_group, 2)
         layout.addLayout(media_layout, 1)
@@ -590,6 +606,7 @@ class MediaReviewDialog(QDialog):
         self.output_edit = QLineEdit(default_output)
         self.output_edit.setPlaceholderText("选择最终证据包保存根目录")
         output_button = QPushButton("浏览…")
+        output_button.setObjectName("browseButton")
         output_button.clicked.connect(self._choose_output_root)
         output_row.addWidget(self.output_edit, 1)
         output_row.addWidget(output_button)
@@ -598,12 +615,17 @@ class MediaReviewDialog(QDialog):
         self.confirm_check = QCheckBox(
             "我已检查勾选的截图和录屏代表帧/完整回放，确认均属于本次应用取证"
         )
+        self.confirm_check.setObjectName("confirmCheck")
         layout.addWidget(self.confirm_check)
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("生成证据包")
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        generate_button = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        generate_button.setText("生成证据包")
+        generate_button.setObjectName("dialogPrimary")
+        cancel_button.setText("取消")
+        cancel_button.setObjectName("dialogSecondary")
         self.buttons.accepted.connect(self._validate_and_accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
@@ -946,6 +968,168 @@ class MainWindow(QMainWindow):
             }
             QLabel#statusText { font-size: 14px; font-weight: 650; }
             QLabel#details { color: #58677d; line-height: 1.5; }
+            QDialog#mediaReviewDialog {
+                background: #f4f7fb;
+                color: #0f172a;
+            }
+            QGroupBox#mediaGroup {
+                background: white;
+                border: 1px solid #dce5ef;
+                border-radius: 14px;
+                margin-top: 14px;
+                padding: 16px 12px 12px 12px;
+                font-size: 14px;
+                font-weight: 750;
+            }
+            QGroupBox#mediaGroup::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 14px;
+                padding: 0 7px;
+                background: #f4f7fb;
+                color: #162239;
+            }
+            QLabel#groupHint {
+                color: #68778d;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 0 2px 4px 2px;
+            }
+            QLabel#groupFileName {
+                color: #17233b;
+                font-size: 14px;
+                font-weight: 750;
+                padding: 0 2px;
+            }
+            QScrollArea#mediaScroll {
+                background: #f8fafc;
+                border: 1px solid #e1e8f0;
+                border-radius: 11px;
+            }
+            QScrollArea#mediaScroll > QWidget > QWidget {
+                background: #f8fafc;
+            }
+            QWidget#mediaCanvas {
+                background: #f8fafc;
+            }
+            QWidget#mediaCard {
+                background: white;
+                border: 1px solid #e1e8f0;
+                border-radius: 12px;
+            }
+            QLabel#mediaPreview {
+                background: #eef2f7;
+            }
+            QLineEdit:focus, QComboBox:focus {
+                background: white;
+                border: 2px solid #0d9275;
+                padding: 8px;
+            }
+            QComboBox:hover, QLineEdit:hover {
+                border-color: #a7b8ca;
+            }
+            QPushButton#browseButton,
+            QPushButton#softButton {
+                background: #f0faf7;
+                color: #087763;
+                border: 1px solid #b9ded4;
+            }
+            QPushButton#browseButton:hover,
+            QPushButton#softButton:hover {
+                background: #e1f5ef;
+                border-color: #0d9275;
+            }
+            QLabel#analysisHint {
+                background: #fff8e8;
+                color: #8a5a0a;
+                border: 1px solid #f1d898;
+                border-radius: 9px;
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: 650;
+            }
+            QCheckBox#confirmCheck {
+                background: #ecf9f4;
+                color: #075f4e;
+                border: 1px solid #bce3d7;
+                border-radius: 10px;
+                padding: 10px 12px;
+                font-weight: 650;
+            }
+            QCheckBox#confirmCheck::indicator,
+            QWidget#mediaCard QCheckBox::indicator {
+                width: 17px;
+                height: 17px;
+            }
+            QPushButton#dialogPrimary {
+                background: #087763;
+                color: white;
+                border: 1px solid #087763;
+                padding: 10px 20px;
+                font-weight: 750;
+            }
+            QPushButton#dialogPrimary:hover {
+                background: #066653;
+                border-color: #066653;
+            }
+            QPushButton#dialogSecondary {
+                background: white;
+                color: #42536b;
+                border: 1px solid #cbd6e5;
+                padding: 10px 18px;
+            }
+            QPushButton#dialogSecondary:hover {
+                background: #f8fafc;
+                color: #17233b;
+                border-color: #9badc2;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 11px;
+                margin: 4px 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c5d0dc;
+                border-radius: 4px;
+                min-height: 32px;
+            }
+            QScrollBar::handle:vertical:hover { background: #9eafc1; }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0;
+                background: transparent;
+            }
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 11px;
+                margin: 2px 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #c5d0dc;
+                border-radius: 4px;
+                min-width: 32px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #9eafc1; }
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {
+                width: 0;
+                background: transparent;
+            }
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {
+                background: transparent;
+            }
+            QToolTip {
+                background: #17233b;
+                color: white;
+                border: 0;
+                border-radius: 6px;
+                padding: 6px 8px;
+            }
             """
         )
 

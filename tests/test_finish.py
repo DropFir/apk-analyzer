@@ -189,7 +189,8 @@ def test_finalize_builds_and_validates_schema3_package(tmp_path: Path) -> None:
     observations = json.loads((package / "observations.json").read_text(encoding="utf-8"))
     assert result["status"] == "success"
     assert Path(result["outputRoot"]) == output_root.resolve()
-    assert package.parent.parent == output_root.resolve()
+    assert package.parent == output_root.resolve()
+    assert package.name.startswith("Example_com.example.app_")
     assert observations["schema_version"] == 3
     assert observations["media"]["screenshot_count"] == 1
     assert observations["media"]["recording"]["content_visibility"] == "visible"

@@ -614,12 +614,11 @@ def finalize_evidence(
     final_root = (
         Path(output_root).expanduser().resolve() if output_root else bundle_path
     )
-    date_root = final_root / today
-    final_package = date_root / folder_name
+    final_package = final_root / folder_name
     if final_package.exists():
         raise ScanFailure(f"拒绝覆盖已有证据包：{final_package}")
-    date_root.mkdir(parents=True, exist_ok=True)
-    staging = date_root / f".{folder_name}.staging-{os.urandom(8).hex()}"
+    final_root.mkdir(parents=True, exist_ok=True)
+    staging = final_root / f".{folder_name}.staging-{os.urandom(8).hex()}"
     screenshots_root = staging / "screenshots"
     videos_root = staging / "videos"
     source_root = staging / "source_package"

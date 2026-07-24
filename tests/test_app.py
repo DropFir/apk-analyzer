@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication
 
 from apkba_analyzer.app import DropCard, MainWindow
@@ -45,4 +47,42 @@ def test_copy_handoff_message_puts_ready_text_on_clipboard(
         f"交接包：{bundle}"
     )
     assert window.copy_button.text() == "✓ 已复制到剪贴板"
+    window.close()
+
+
+def test_full_window_drop_routes_apkm_and_image_together(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    source = tmp_path / "Sample App.apkm"
+    icon = tmp_path / "Sample App.webp"
+    source.write_bytes(b"fixture")
+    icon.write_bytes(b"fixture")
+    window = MainWindow()
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(icon)), QUrl.fromLocalFile(str(source))])
+    enter_event = QDragEnterEvent(
+        QPoint(10, 10),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    QApplication.sendEvent(window.output_edit, enter_event)
+    QApplication.sendEvent(window.output_edit, event)
+
+    assert enter_event.isAccepted() is True
+    assert event.isAccepted() is True
+    assert window.source_path == str(source.resolve())
+    assert window.icon_path == str(icon.resolve())
+    assert window.source_card.file_name_label.text() == source.name
+    assert window.icon_card.file_name_label.text() == icon.name
     window.close()

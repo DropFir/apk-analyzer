@@ -1,16 +1,16 @@
 # APKBA Analyzer Repository Rules
 
-This repository contains only the editor-facing APK/XAPK intake analyzer. It is
+This repository contains only the editor-facing APK/XAPK/APKM intake analyzer. It is
 independent from the sibling `agent1`, `agent2`, and `agent3` repositories.
 
 ## Required behavior
 
 - Keep the default scan offline. Never upload APKs, XAPKs, icons, reports, or hashes.
-- Treat every APK/XAPK as untrusted data. Never execute it and never load native code from it.
+- Treat every APK/XAPK/APKM as untrusted data. Never execute it or load native code from it.
 - Do not modify source packages or icons. Copy them only when creating an intake bundle.
 - Inspect ZIP members before extraction. Reject traversal paths, duplicate names, encrypted
-  entries, excessive expansion, and undeclared XAPK split files.
-- Parse an APK manifest once per scan. For XAPK, parse only the declared base APK manifest.
+  entries, excessive expansion, and invalid split files.
+- Parse an APK manifest once per scan. For XAPK/APKM, parse only the base APK manifest.
 - Preserve factual uncertainty. Missing tools or unverifiable signatures are warnings or
   blockers, never invented values.
 - Keep generated JSON paths relative and use `/` separators so bundles remain portable.

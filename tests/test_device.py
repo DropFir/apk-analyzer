@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,39 @@ def test_select_xapk_rejects_incompatible_abi() -> None:
         )
 
 
+def test_select_apkm_matches_feature_module_configs() -> None:
+    bundle = {
+        "baseApk": "base.apk",
+        "splits": [
+            {"id": "base", "file": "base.apk"},
+            {"id": "camera", "file": "split_camera.apk"},
+            {
+                "id": "camera.config.arm64_v8a",
+                "file": "split_camera.config.arm64_v8a.apk",
+            },
+            {"id": "camera.config.x86", "file": "split_camera.config.x86.apk"},
+            {
+                "id": "camera.config.xxhdpi",
+                "file": "split_camera.config.xxhdpi.apk",
+            },
+            {"id": "camera.config.en", "file": "split_camera.config.en.apk"},
+        ],
+    }
+    device = {
+        "supported_abis": ["arm64-v8a"],
+        "density_dpi": 420,
+        "locale": "en-US",
+    }
+
+    assert select_xapk_splits(bundle, device) == [
+        "base.apk",
+        "split_camera.config.arm64_v8a.apk",
+        "split_camera.config.xxhdpi.apk",
+        "split_camera.config.en.apk",
+        "split_camera.apk",
+    ]
+
+
 class FakePrepareAdb:
     def __init__(self, *, install_ok: bool = True, exact_launch_ok: bool = True):
         self.install_ok = install_ok
@@ -103,6 +137,8 @@ class FakePrepareAdb:
         if arguments[:3] == ["shell", "pm", "path"]:
             return completed("", 1)
         if arguments[:2] == ["install", "-r"]:
+            return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
+        if arguments[:2] == ["install-multiple", "-r"]:
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
         if arguments[:4] == ["shell", "am", "start", "-n"]:
             return completed("Starting\n" if self.exact_launch_ok else "Error: bad activity\n")
@@ -197,6 +233,42 @@ def test_prepare_uses_one_monkey_fallback_for_rejected_component(
 
     monkey_calls = [args for _serial, args in adb.calls if args[:2] == ["shell", "monkey"]]
     assert len(monkey_calls) == 1
+
+
+def test_prepare_installs_apkm_with_install_multiple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    source = bundle / "app.apkm"
+    (bundle / "app.apk").unlink()
+
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("base.apk", b"base")
+        archive.writestr("split_config.arm64_v8a.apk", b"arm64")
+    handoff_path = bundle / "agent1_handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["source"].update({"path": source.name, "format": "apkm"})
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    report["xapk"] = {
+        "baseApk": "base.apk",
+        "splits": [
+            {"id": "base", "file": "base.apk"},
+            {"id": "config.arm64_v8a", "file": "split_config.arm64_v8a.apk"},
+        ],
+    }
+    adb = FakePrepareAdb()
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    prepare_bundle(report, bundle, "PHONE-APKM", adb=adb)
+
+    install = next(
+        arguments for _serial, arguments in adb.calls if arguments[0] == "install-multiple"
+    )
+    assert install[:2] == ["install-multiple", "-r"]
+    assert {Path(path).name for path in install[2:]} == {
+        "base.apk",
+        "split_config.arm64_v8a.apk",
+    }
 
 
 def test_install_failure_stops_before_launch(

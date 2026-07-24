@@ -261,68 +261,105 @@ def select_xapk_splits(xapk: dict[str, Any], device: dict[str, Any]) -> list[str
     rows = list(xapk.get("splits") or [])
     base = str(xapk.get("baseApk") or "")
     if not base:
-        raise ScanFailure("XAPK 未确认 base APK。")
+        raise ScanFailure("分包未确认 base APK。")
     selected = [base]
-    abi_ids = {
-        "arm64-v8a": "config.arm64_v8a",
-        "armeabi-v7a": "config.armeabi_v7a",
-        "armeabi": "config.armeabi",
-        "x86_64": "config.x86_64",
-        "x86": "config.x86",
+
+    def config_parts(row: dict[str, Any]) -> tuple[str, str] | None:
+        split_id = str(row.get("id") or "")
+        if split_id.startswith("config."):
+            return "base", split_id.removeprefix("config.")
+        if ".config." in split_id:
+            module, qualifier = split_id.rsplit(".config.", 1)
+            return module, qualifier
+        return None
+
+    config_rows = [
+        (row, parts[0], parts[1])
+        for row in rows
+        if (parts := config_parts(row)) is not None
+    ]
+
+    def grouped(
+        candidates: list[tuple[dict[str, Any], str, str]],
+    ) -> dict[str, list[tuple[dict[str, Any], str]]]:
+        result: dict[str, list[tuple[dict[str, Any], str]]] = {}
+        for row, module, qualifier in candidates:
+            result.setdefault(module, []).append((row, qualifier))
+        return result
+
+    abi_qualifiers = {
+        "arm64-v8a": "arm64_v8a",
+        "armeabi-v7a": "armeabi_v7a",
+        "armeabi": "armeabi",
+        "x86_64": "x86_64",
+        "x86": "x86",
     }
-    available_abi = [row for row in rows if row.get("id") in abi_ids.values()]
-    if available_abi:
-        supported = list(device.get("supported_abis") or [device.get("abi")])
+    available_abi = grouped(
+        [item for item in config_rows if item[2] in abi_qualifiers.values()]
+    )
+    supported = list(device.get("supported_abis") or [device.get("abi")])
+    for module, candidates in available_abi.items():
         match = next(
             (
                 row
                 for abi in supported
-                for row in available_abi
-                if row.get("id") == abi_ids.get(str(abi).lower())
+                for row, qualifier in candidates
+                if qualifier == abi_qualifiers.get(str(abi).lower())
             ),
             None,
         )
         if not match:
-            provided = ", ".join(str(row.get("id")) for row in available_abi)
-            raise ScanFailure(f"手机 ABI 与 XAPK 不兼容；XAPK 提供：{provided}。")
+            provided = ", ".join(qualifier for _row, qualifier in candidates)
+            raise ScanFailure(
+                f"手机 ABI 与分包模块 {module} 不兼容；分包提供：{provided}。"
+            )
         selected.append(str(match["file"]))
+
     density_map = {
-        "config.ldpi": 120,
-        "config.mdpi": 160,
-        "config.tvdpi": 213,
-        "config.hdpi": 240,
-        "config.xhdpi": 320,
-        "config.xxhdpi": 480,
-        "config.xxxhdpi": 640,
+        "ldpi": 120,
+        "mdpi": 160,
+        "tvdpi": 213,
+        "hdpi": 240,
+        "xhdpi": 320,
+        "xxhdpi": 480,
+        "xxxhdpi": 640,
     }
-    densities = [row for row in rows if row.get("id") in density_map]
-    if densities:
-        target = int(device.get("density_dpi") or 420)
-        match = min(densities, key=lambda row: abs(density_map[str(row["id"])] - target))
+    density_groups = grouped([item for item in config_rows if item[2] in density_map])
+    target = int(device.get("density_dpi") or 420)
+    for candidates in density_groups.values():
+        match, _qualifier = min(
+            candidates, key=lambda item: abs(density_map[item[1]] - target)
+        )
         selected.append(str(match["file"]))
-    language_rows = [
-        row
-        for row in rows
-        if re.match(r"^config\.[a-z]{2,3}(?:-r[A-Z]{2})?$", str(row.get("id")))
-        and row.get("id") not in density_map
-        and row.get("id") not in abi_ids.values()
-    ]
-    if language_rows:
-        language = str(device.get("locale") or "").split("-", 1)[0].split("_", 1)[0].lower()
+
+    def is_language(qualifier: str) -> bool:
+        return bool(
+            re.fullmatch(r"[a-z]{2,3}(?:-r[A-Z]{2})?", qualifier)
+            or re.fullmatch(r"b\+[A-Za-z0-9+]+", qualifier)
+        )
+
+    language_groups = grouped([item for item in config_rows if is_language(item[2])])
+    language = str(device.get("locale") or "").split("-", 1)[0].split("_", 1)[0].lower()
+    for candidates in language_groups.values():
         match = next(
-            (row for row in language_rows if row.get("id") == f"config.{language}"),
+            (
+                row
+                for row, qualifier in candidates
+                if qualifier.lower() == language
+                or qualifier.lower().startswith(f"{language}-")
+                or qualifier.lower().startswith(f"b+{language}+")
+            ),
             None,
-        ) or next((row for row in language_rows if row.get("id") == "config.en"), None)
+        ) or next(
+            (row for row, qualifier in candidates if qualifier.lower() == "en"),
+            None,
+        )
         if match:
             selected.append(str(match["file"]))
+
     for row in rows:
         split_id = str(row.get("id") or "")
-        if (
-            split_id == "base"
-            or split_id in abi_ids.values()
-            or split_id in density_map
-            or re.match(r"^config\.[a-z]{2,3}(?:-r[A-Z]{2})?$", split_id)
-        ):
+        if split_id == "base" or config_parts(row) is not None:
             continue
         file_name = str(row.get("file") or "")
         if file_name and file_name not in selected:
@@ -338,10 +375,10 @@ def _extract_splits(source: Path, selected: list[str], destination: Path) -> lis
         for member in selected:
             pure = PurePosixPath(member)
             if member not in archive_names or pure.is_absolute() or ".." in pure.parts:
-                raise ScanFailure(f"XAPK 中缺少或包含不安全的 split：{member}")
+                raise ScanFailure(f"分包中缺少或包含不安全的 split：{member}")
             file_name = pure.name
             if not file_name or file_name in names:
-                raise ScanFailure(f"XAPK split 文件名冲突：{file_name}")
+                raise ScanFailure(f"分包 split 文件名冲突：{file_name}")
             names.add(file_name)
             target = destination / file_name
             with archive.open(member) as source_stream, target.open("wb") as target_stream:
@@ -421,7 +458,7 @@ def prepare_bundle(
         "status": "already_installed" if was_installed else "not_installed",
     }
     selected_splits: list[str] = []
-    if handoff["source"]["format"] == "xapk":
+    if handoff["source"]["format"] in {"xapk", "apkm"}:
         selected_splits = select_xapk_splits(report.get("xapk") or {}, device)
 
     _progress(progress, 78, "安装到已选择的手机…")

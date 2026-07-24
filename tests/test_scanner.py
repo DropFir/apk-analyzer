@@ -98,6 +98,37 @@ def test_xapk_inventory_and_base_manifest(tmp_path: Path) -> None:
     assert all(row["sha256"] for row in report["xapk"]["splits"])
 
 
+def test_apkm_inventory_and_base_manifest(tmp_path: Path) -> None:
+    base = tmp_path / "base.apk"
+    split = tmp_path / "split_config.arm64_v8a.apk"
+    source = tmp_path / "fixture.apkm"
+    icon = tmp_path / "icon.png"
+    make_apk(base)
+    make_apk(split, MANIFEST.replace("<manifest ", '<manifest split="config.arm64_v8a" '))
+    metadata = {
+        "apkm_version": 3,
+        "app_name": "Fixture App",
+        "pname": "com.example.fixture",
+        "versioncode": "241",
+    }
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("info.json", json.dumps(metadata))
+        archive.write(base, "base.apk")
+        archive.write(split, split.name)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["source"]["format"] == "apkm"
+    assert report["app"]["packageName"] == "com.example.fixture"
+    assert report["xapk"]["bundleFormat"] == "apkm"
+    assert report["xapk"]["baseApk"] == "base.apk"
+    assert [row["id"] for row in report["xapk"]["splits"]] == [
+        "base",
+        "config.arm64_v8a",
+    ]
+
+
 def test_archive_traversal_is_blocked(tmp_path: Path) -> None:
     source = tmp_path / "unsafe.apk"
     icon = tmp_path / "icon.png"

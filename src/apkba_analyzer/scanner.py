@@ -1,4 +1,4 @@
-"""Offline, non-executing APK/XAPK intake scanner."""
+"""Offline, non-executing APK/XAPK/APKM intake scanner."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from apkba_analyzer.tools import find_apkanalyzer, find_apksigner, run_tool
 
 Progress = Callable[[int, str], None]
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
-SUPPORTED_SOURCES = {".apk", ".xapk"}
+SUPPORTED_SOURCES = {".apk", ".xapk", ".apkm"}
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_XAPK_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -439,6 +439,81 @@ def _base_split(manifest: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _verify_split_signatures(
+    archive: zipfile.ZipFile,
+    temporary_root: Path,
+    split_rows: list[dict[str, Any]],
+    base_file: str,
+    base_path: Path,
+    apksigner: Path | None,
+    findings: list[Finding],
+    package_label: str,
+) -> dict[str, Any]:
+    signature_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(split_rows):
+        split_path = temporary_root / f"split-{index:04d}.apk"
+        if row["file"] == base_file:
+            split_path = base_path
+        else:
+            with (
+                archive.open(row["file"]) as input_stream,
+                split_path.open("wb") as output_stream,
+            ):
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+        signature = _verify_apk_signature(split_path, apksigner)
+        signature_rows.append(
+            {
+                "file": row["file"],
+                "status": signature["status"],
+                "verified": signature["verified"],
+                "certificateSha256": signature["certificateSha256"],
+            }
+        )
+
+    digest_sets = {
+        tuple(row["certificateSha256"])
+        for row in signature_rows
+        if row["certificateSha256"]
+    }
+    all_verified = bool(signature_rows) and all(row["verified"] for row in signature_rows)
+    missing_certificate = any(
+        row["status"] == "certificate_missing" for row in signature_rows
+    )
+    if len(digest_sets) > 1:
+        findings.append(
+            Finding(
+                "error",
+                "signature.split_mismatch",
+                f"{package_label} split APK 的签名证书不一致。",
+            )
+        )
+    elif missing_certificate:
+        findings.append(
+            Finding(
+                "error",
+                "signature.certificate_missing",
+                f"{package_label} 至少一个 split 未能读取当前签名证书 SHA-256。",
+            )
+        )
+    elif not all_verified:
+        findings.append(
+            Finding(
+                "warning",
+                "signature.not_fully_verified",
+                "未能用 apksigner 完整验证所有 split；已保留可提取的证书信息。",
+            )
+        )
+    return {
+        "status": "verified"
+        if all_verified and len(digest_sets) <= 1
+        else "not_fully_verified",
+        "verified": all_verified and len(digest_sets) <= 1,
+        "certificateSha256": list(next(iter(digest_sets), ())),
+        "tool": "apksigner" if apksigner else "androguard",
+        "splits": signature_rows,
+    }
+
+
 def _read_xapk(
     source: Path,
     apkanalyzer: Path | None,
@@ -525,66 +600,16 @@ def _read_xapk(
             app, parser_name = _parse_apk_manifest(base_path, apkanalyzer, findings)
 
             _progress(progress, 66, "验证 XAPK split 签名…")
-            signature_rows: list[dict[str, Any]] = []
-            for index, row in enumerate(split_rows):
-                split_path = temporary_root / f"split-{index:04d}.apk"
-                if row["file"] == base_file:
-                    split_path = base_path
-                else:
-                    with (
-                        archive.open(row["file"]) as input_stream,
-                        split_path.open("wb") as output_stream,
-                    ):
-                        shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
-                signature = _verify_apk_signature(split_path, apksigner)
-                signature_rows.append(
-                    {
-                        "file": row["file"],
-                        "status": signature["status"],
-                        "verified": signature["verified"],
-                        "certificateSha256": signature["certificateSha256"],
-                    }
-                )
-            digest_sets = {
-                tuple(row["certificateSha256"])
-                for row in signature_rows
-                if row["certificateSha256"]
-            }
-            all_verified = bool(signature_rows) and all(row["verified"] for row in signature_rows)
-            missing_certificate = any(
-                row["status"] == "certificate_missing" for row in signature_rows
+            signature_record = _verify_split_signatures(
+                archive,
+                temporary_root,
+                split_rows,
+                base_file,
+                base_path,
+                apksigner,
+                findings,
+                "XAPK",
             )
-            if len(digest_sets) > 1:
-                findings.append(
-                    Finding(
-                        "error", "signature.split_mismatch", "XAPK split APK 的签名证书不一致。"
-                    )
-                )
-            elif missing_certificate:
-                findings.append(
-                    Finding(
-                        "error",
-                        "signature.certificate_missing",
-                        "XAPK 至少一个 split 未能读取当前签名证书 SHA-256。",
-                    )
-                )
-            elif not all_verified:
-                findings.append(
-                    Finding(
-                        "warning",
-                        "signature.not_fully_verified",
-                        "未能用 apksigner 完整验证所有 split；已保留可提取的证书信息。",
-                    )
-                )
-            signature_record = {
-                "status": "verified"
-                if all_verified and len(digest_sets) <= 1
-                else "not_fully_verified",
-                "verified": all_verified and len(digest_sets) <= 1,
-                "certificateSha256": list(next(iter(digest_sets), ())),
-                "tool": "apksigner" if apksigner else "androguard",
-                "splits": signature_rows,
-            }
 
     top_package = xapk_manifest.get("package_name") or xapk_manifest.get("packageName")
     top_version_code = xapk_manifest.get("version_code") or xapk_manifest.get("versionCode")
@@ -651,6 +676,125 @@ def _read_xapk(
     return app, xapk, parser_name, signature_record
 
 
+def _apkm_split_id(file_name: str) -> str:
+    name = PurePosixPath(file_name).name
+    if name.lower() == "base.apk":
+        return "base"
+    stem = name[:-4] if name.lower().endswith(".apk") else name
+    if stem.startswith("split_"):
+        stem = stem[6:]
+    return stem
+
+
+def _read_apkm(
+    source: Path,
+    apkanalyzer: Path | None,
+    apksigner: Path | None,
+    findings: list[Finding],
+    progress: Progress | None,
+) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    with zipfile.ZipFile(source) as archive:
+        names = archive.namelist()
+        apk_names = sorted(name for name in names if name.lower().endswith(".apk"))
+        base_candidates = [
+            name for name in apk_names if PurePosixPath(name).name.lower() == "base.apk"
+        ]
+        if len(base_candidates) != 1:
+            raise ScanFailure("APKM 必须包含且只能包含一个 base.apk。")
+        base_file = base_candidates[0]
+        split_rows: list[dict[str, Any]] = []
+        for file_name in apk_names:
+            if not _safe_member_name(file_name):
+                continue
+            info = archive.getinfo(file_name)
+            with archive.open(info) as stream:
+                digest = _hash_stream(stream)
+            split_rows.append(
+                {
+                    "id": _apkm_split_id(file_name),
+                    "file": file_name,
+                    "sizeBytes": info.file_size,
+                    "sha256": digest,
+                }
+            )
+
+        metadata: dict[str, Any] = {}
+        if "info.json" in names:
+            metadata_info = archive.getinfo("info.json")
+            if metadata_info.file_size > MAX_XAPK_MANIFEST_BYTES:
+                raise ScanFailure("APKM info.json 异常过大。")
+            try:
+                parsed = json.loads(archive.read(metadata_info).decode("utf-8-sig"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ScanFailure(f"APKM info.json 无法解析：{error}") from error
+            if isinstance(parsed, dict):
+                metadata = parsed
+
+        with tempfile.TemporaryDirectory(prefix="apkba-apkm-") as temporary:
+            temporary_root = Path(temporary)
+            base_path = temporary_root / "base.apk"
+            with archive.open(base_file) as source_stream, base_path.open("wb") as target_stream:
+                shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+            _progress(progress, 52, "解析 APKM base APK manifest…")
+            app, parser_name = _parse_apk_manifest(base_path, apkanalyzer, findings)
+            _progress(progress, 66, "验证 APKM split 签名…")
+            signature_record = _verify_split_signatures(
+                archive,
+                temporary_root,
+                split_rows,
+                base_file,
+                base_path,
+                apksigner,
+                findings,
+                "APKM",
+            )
+
+    top_package = metadata.get("pname") or metadata.get("package_name")
+    top_version_code = metadata.get("versioncode") or metadata.get("version_code")
+    if top_package and app.get("packageName") and top_package != app["packageName"]:
+        findings.append(
+            Finding(
+                "error",
+                "apkm.package_mismatch",
+                "APKM 元数据包名与 base APK manifest 不一致。",
+                f"APKM={top_package}; base={app['packageName']}",
+            )
+        )
+    if (
+        top_version_code is not None
+        and app.get("versionCode") is not None
+        and str(top_version_code) != str(app["versionCode"])
+    ):
+        findings.append(
+            Finding(
+                "warning",
+                "apkm.version_code_mismatch",
+                "APKM 元数据版本号与 base APK manifest 不一致。",
+                f"APKM={top_version_code}; base={app['versionCode']}",
+            )
+        )
+
+    app.update(
+        {
+            "applicationLabel": metadata.get("app_name") or app.get("applicationLabel"),
+            "packageName": top_package or app.get("packageName"),
+            "versionCode": _number_or_text(top_version_code)
+            if top_version_code is not None
+            else app.get("versionCode"),
+        }
+    )
+    bundle = {
+        "bundleFormat": "apkm",
+        "apkmVersion": _number_or_text(metadata.get("apkm_version")),
+        "baseApk": base_file,
+        "splitConfigs": [],
+        "splits": split_rows,
+        "undeclaredApks": [],
+        "totalSize": sum(row["sizeBytes"] for row in split_rows),
+    }
+    return app, bundle, parser_name, signature_record
+
+
 def scan_package(
     source_path: str | os.PathLike[str],
     icon_path: str | os.PathLike[str],
@@ -658,7 +802,7 @@ def scan_package(
     profile: str = "standard",
     progress: Progress | None = None,
 ) -> dict[str, Any]:
-    """Scan an APK/XAPK and icon without executing or modifying either input."""
+    """Scan an APK/XAPK/APKM and icon without executing or modifying either input."""
 
     source = Path(source_path).expanduser().resolve()
     icon = Path(icon_path).expanduser().resolve()
@@ -667,11 +811,11 @@ def scan_package(
     _progress(progress, 2, "检查输入文件…")
 
     if not source.is_file():
-        raise ScanFailure(f"找不到 APK/XAPK：{source}")
+        raise ScanFailure(f"找不到 APK/XAPK/APKM：{source}")
     if not icon.is_file():
         raise ScanFailure(f"找不到图标：{icon}")
     if source.suffix.lower() not in SUPPORTED_SOURCES:
-        raise ScanFailure("源文件必须是 .apk 或 .xapk。")
+        raise ScanFailure("源文件必须是 .apk、.xapk 或 .apkm。")
     if icon.suffix.lower() not in SUPPORTED_IMAGES:
         raise ScanFailure("图标必须是 PNG、JPG、WebP 或 AVIF。")
     if source.name.lower().endswith((".crdownload", ".part", ".tmp")):
@@ -735,9 +879,14 @@ def scan_package(
                             signature.get("error"),
                         )
                     )
-            else:
+            elif source.suffix.lower() == ".xapk":
                 _progress(progress, 44, "读取 XAPK manifest 与 split 清单…")
                 app, xapk, parser_name, signature = _read_xapk(
+                    source, apkanalyzer, apksigner, findings, progress
+                )
+            else:
+                _progress(progress, 44, "读取 APKM base APK 与 split 清单…")
+                app, xapk, parser_name, signature = _read_apkm(
                     source, apkanalyzer, apksigner, findings, progress
                 )
         except (ScanFailure, OSError, zipfile.BadZipFile) as error:

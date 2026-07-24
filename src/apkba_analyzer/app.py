@@ -6,7 +6,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QCloseEvent,
     QDesktopServices,
@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self.copy_reset_timer.timeout.connect(self._reset_copy_button)
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
+        self.setAcceptDrops(True)
         self.resize(840, 540)
         self.setMinimumSize(700, 480)
         self._build_ui()
@@ -229,7 +230,7 @@ class MainWindow(QMainWindow):
         cards.setHorizontalSpacing(12)
         cards.setVerticalSpacing(8)
         self.source_card = DropCard(
-            "① APK / XAPK",
+            "① APK / XAPK / APKM",
             "拖拽或选择安装包",
             SUPPORTED_SOURCES,
         )
@@ -332,6 +333,16 @@ class MainWindow(QMainWindow):
 
         self.source_card.path_changed.connect(self._set_source)
         self.icon_card.path_changed.connect(self._set_icon)
+        for drop_target in (
+            scroll.viewport(),
+            root,
+            self.source_card,
+            self.icon_card,
+            self.output_edit,
+            self.device_combo,
+        ):
+            drop_target.setAcceptDrops(True)
+            drop_target.installEventFilter(self)
         QTimer.singleShot(0, self._refresh_devices)
 
     def _apply_styles(self) -> None:
@@ -419,11 +430,14 @@ class MainWindow(QMainWindow):
         elif self.icon_path:
             self.status_badge.setText("已选择 1/2")
             self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
-            self.status_text.setText("图标已添加，再选择一个 APK/XAPK。")
+            self.status_text.setText("图标已添加，再选择一个 APK/XAPK/APKM。")
 
     def _choose_source(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 APK/XAPK", "", "Android package (*.apk *.xapk)"
+            self,
+            "选择 APK/XAPK/APKM",
+            "",
+            "Android package (*.apk *.xapk *.apkm)",
         )
         if path:
             self.source_card.set_path(path)
@@ -443,7 +457,9 @@ class MainWindow(QMainWindow):
     def _start_scan(self) -> None:
         output = self.output_edit.text().strip()
         if not self.source_path or not self.icon_path or not output:
-            QMessageBox.information(self, "还差一步", "请选择 APK/XAPK、图标和输出位置。")
+            QMessageBox.information(
+                self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。"
+            )
             return
         self.settings.setValue("output", output)
         self._set_busy(True)
@@ -473,7 +489,9 @@ class MainWindow(QMainWindow):
         output = self.output_edit.text().strip()
         serial = self.device_combo.currentData()
         if not self.source_path or not self.icon_path or not output:
-            QMessageBox.information(self, "还差一步", "请选择 APK/XAPK、图标和输出位置。")
+            QMessageBox.information(
+                self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。"
+            )
             return
         if not serial:
             QMessageBox.information(
@@ -643,6 +661,88 @@ class MainWindow(QMainWindow):
     def _open_bundle(self) -> None:
         if self.bundle_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.bundle_path))
+
+    @staticmethod
+    def _local_drop_paths(event: QDragEnterEvent | QDropEvent) -> list[Path]:
+        return [
+            Path(url.toLocalFile())
+            for url in event.mimeData().urls()
+            if url.isLocalFile()
+        ]
+
+    def _set_drop_highlights(self, paths: list[Path]) -> bool:
+        source_ready = any(
+            path.is_file() and path.suffix.lower() in SUPPORTED_SOURCES for path in paths
+        )
+        icon_ready = any(
+            path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES for path in paths
+        )
+        self.source_card._set_visual_state("dragActive", source_ready)
+        self.icon_card._set_visual_state("dragActive", icon_ready)
+        return source_ready or icon_ready
+
+    def _clear_drop_highlights(self) -> None:
+        self.source_card._set_visual_state("dragActive", False)
+        self.icon_card._set_visual_state("dragActive", False)
+
+    def _route_dropped_paths(self, paths: list[Path]) -> bool:
+        source = next(
+            (
+                path
+                for path in paths
+                if path.is_file() and path.suffix.lower() in SUPPORTED_SOURCES
+            ),
+            None,
+        )
+        icon = next(
+            (
+                path
+                for path in paths
+                if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES
+            ),
+            None,
+        )
+        if source:
+            self.source_card.set_path(str(source))
+        if icon:
+            self.icon_card.set_path(str(icon))
+        return source is not None or icon is not None
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() in {QEvent.Type.DragEnter, QEvent.Type.DragMove}:
+            paths = self._local_drop_paths(event)
+            if self._set_drop_highlights(paths):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return True
+        if event.type() == QEvent.Type.DragLeave:
+            self._clear_drop_highlights()
+            event.accept()
+            return True
+        if event.type() == QEvent.Type.Drop:
+            paths = self._local_drop_paths(event)
+            self._clear_drop_highlights()
+            if self._route_dropped_paths(paths):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return True
+        return super().eventFilter(watched, event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if self._set_drop_highlights(self._local_drop_paths(event)):
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802
+        self._clear_drop_highlights()
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        paths = self._local_drop_paths(event)
+        self._clear_drop_highlights()
+        if self._route_dropped_paths(paths):
+            event.acceptProposedAction()
 
     def _copy_handoff_message(self) -> None:
         if not self.bundle_path:

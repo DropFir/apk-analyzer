@@ -41,6 +41,8 @@ def test_main_window_uses_landscape_layout(
 
     assert window.width() > window.height()
     assert window.minimumWidth() > window.minimumHeight()
+    assert not hasattr(window, "scan_button")
+    assert not hasattr(window, "copy_button")
     window.close()
 
 
@@ -83,23 +85,6 @@ def test_media_review_is_landscape_and_previews_are_clickable(
     dialog.close()
 
 
-def test_copy_handoff_message_puts_ready_text_on_clipboard(
-    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
-    window = MainWindow()
-    bundle = tmp_path / "agent1-handoff"
-    window.source_path = "old.apk"
-    window.icon_path = "old.webp"
-    window.bundle_path = str(bundle)
-
-    window._copy_handoff_message()
-
-    assert QApplication.clipboard().text() == (f"好了。\n交接包：{bundle}")
-    assert window.copy_button.text() == "✓ 已复制到剪贴板"
-    window.close()
-
-
 def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
     qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -135,13 +120,12 @@ def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
             "recordingCount": 1,
         }
     )
-    window._copy_handoff_message()
 
     assert window.capture_button.isEnabled() is False
     assert window.capture_button.text() == "✓ 本次取证边界已记录"
     assert window.source_path == ""
     assert window.icon_path == ""
-    assert "截图 3 张，录屏 1 段" in QApplication.clipboard().text()
+    assert "截图 3 张 · 录屏 1 段" in window.detail_label.text()
     assert "可以直接拖入下一份 APK" in window.status_text.text()
     window.close()
 

@@ -477,6 +477,7 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
 
     observations_path = package / "observations.json"
     notes_path = package / "version_update_notes.md"
+    ready_marker = package / "_READY"
     try:
         observations = json.loads(observations_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -492,6 +493,8 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
     video = package / "videos" / "raw_install_test.mp4"
     if not notes_path.is_file() or len(icons) != 1 or len(sources) != 1:
         raise ScanFailure("证据包缺少说明、唯一图标或唯一源安装包。")
+    if not ready_marker.is_file() or ready_marker.stat().st_size != 0:
+        raise ScanFailure("证据包缺少 0 字节的 _READY 完成标记。")
     with Image.open(icons[0]) as icon:
         width, height = icon.size
     if icons[0].stat().st_size <= 0 or width != height:
@@ -537,6 +540,7 @@ def finalize_evidence(
     review_method: str,
     operator_reported_protected_media: bool = False,
     local_restriction_image: str | os.PathLike[str] | None = None,
+    output_root: str | os.PathLike[str] | None = None,
     review: dict[str, Any] | None = None,
     adb: AdbClient | None = None,
 ) -> dict[str, Any]:
@@ -607,11 +611,14 @@ def finalize_evidence(
     app_name = _portable_name(str(app.get("application_label") or ""), "Android_App")
     package_name = str(app.get("package_name") or "")
     folder_name = f"{app_name}_{_portable_name(package_name, 'unknown.package')}_{today}"
-    date_root = bundle_path / today
+    final_root = (
+        Path(output_root).expanduser().resolve() if output_root else bundle_path
+    )
+    date_root = final_root / today
     final_package = date_root / folder_name
     if final_package.exists():
         raise ScanFailure(f"拒绝覆盖已有证据包：{final_package}")
-    date_root.mkdir(exist_ok=True)
+    date_root.mkdir(parents=True, exist_ok=True)
     staging = date_root / f".{folder_name}.staging-{os.urandom(8).hex()}"
     screenshots_root = staging / "screenshots"
     videos_root = staging / "videos"
@@ -847,6 +854,7 @@ def finalize_evidence(
             "No external release-note search was requested for this manual evidence workflow.\n",
             encoding="utf-8",
         )
+        (staging / "_READY").write_bytes(b"")
         validation_started = time.monotonic()
         validation = validate_evidence_package(staging, expected_hash)
         validation_elapsed = round((time.monotonic() - validation_started) * 1000)
@@ -872,6 +880,7 @@ def finalize_evidence(
             "versionUpdateNotesStatus": "not_searched_fast_manual",
             "sourceSha256": source_hash,
             "validation": validation,
+            "outputRoot": str(final_root),
             "automatedElapsedMs": round((time.monotonic() - started) * 1000),
         }
     except Exception:

@@ -327,6 +327,7 @@ class FinalizeWorker(QObject):
                     if self.choices.get("localRestrictionImage")
                     else None
                 ),
+                output_root=str(self.choices["outputRoot"]),
                 review=self.review,
             )
             self.progress.emit(100, "证据包已生成并通过验证。")
@@ -338,7 +339,12 @@ class FinalizeWorker(QObject):
 class MediaReviewDialog(QDialog):
     """One explicit local review replaces Agent1's filename/frame judgment."""
 
-    def __init__(self, review: dict[str, object], parent: QWidget | None = None):
+    def __init__(
+        self,
+        review: dict[str, object],
+        default_output: str,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.review = review
         self.screenshot_checks: dict[str, QCheckBox] = {}
@@ -476,6 +482,16 @@ class MediaReviewDialog(QDialog):
         recording_layout.addWidget(self.suggestion_label)
         layout.addWidget(recording_group)
 
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("最终证据包位置"))
+        self.output_edit = QLineEdit(default_output)
+        self.output_edit.setPlaceholderText("选择最终证据包保存根目录")
+        output_button = QPushButton("浏览…")
+        output_button.clicked.connect(self._choose_output_root)
+        output_row.addWidget(self.output_edit, 1)
+        output_row.addWidget(output_button)
+        layout.addLayout(output_row)
+
         self.confirm_check = QCheckBox(
             "我已检查勾选的截图和录屏代表帧/完整回放，确认均属于本次应用取证"
         )
@@ -503,6 +519,15 @@ class MediaReviewDialog(QDialog):
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
+    def _choose_output_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择最终证据包保存位置",
+            self.output_edit.text(),
+        )
+        if path:
+            self.output_edit.setText(path)
+
     def _validate_and_accept(self) -> None:
         selected = [
             remote_path
@@ -512,12 +537,16 @@ class MediaReviewDialog(QDialog):
         restriction = self.restriction_edit.text().strip()
         visibility = str(self.visibility_combo.currentData() or "")
         frames = list(self.review.get("recordingFrames") or [])
+        output_root = self.output_edit.text().strip()
         if not selected and not restriction:
             QMessageBox.information(
                 self,
                 "还差截图证据",
                 "请至少勾选一张截图；如果应用禁止截图，请选择本地说明图片。",
             )
+            return
+        if not output_root:
+            QMessageBox.information(self, "请选择保存位置", "请选择最终证据包保存根目录。")
             return
         if visibility != "visible" and not frames:
             QMessageBox.information(
@@ -552,6 +581,7 @@ class MediaReviewDialog(QDialog):
             "contentVisibility": visibility,
             "reviewMethod": review_method,
             "operatorReportedProtectedMedia": protected,
+            "outputRoot": self.output_edit.text().strip(),
         }
 
 
@@ -1361,7 +1391,10 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         review = dict(result)
         self._finish_review = review
-        dialog = MediaReviewDialog(review, self)
+        default_output = str(
+            self.settings.value("evidence_output", self.output_edit.text())
+        )
+        dialog = MediaReviewDialog(review, default_output, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             with suppress(Exception):
                 cleanup_media_review(str(review["reviewRoot"]))
@@ -1371,6 +1404,7 @@ class MainWindow(QMainWindow):
             self.status_text.setText("已取消生成；pending-session 和原始输入均保留。")
             return
         choices = dialog.choices()
+        self.settings.setValue("evidence_output", str(choices["outputRoot"]))
         self._run_after_current_thread(lambda: self._start_finalize(review, choices))
 
     def _start_finalize(

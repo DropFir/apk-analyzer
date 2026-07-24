@@ -45,6 +45,7 @@ def _parser() -> argparse.ArgumentParser:
         help="create and validate a schema-3 evidence package from confirmed media",
     )
     finish.add_argument("--bundle", required=True, type=Path)
+    finish.add_argument("--output", type=Path)
     finish.add_argument("--screenshot", action="append", default=[])
     finish.add_argument("--recording", required=True)
     finish.add_argument(
@@ -137,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.operator_reported_protected_media
                 ),
                 local_restriction_image=args.restriction_image,
+                output_root=args.output,
                 review={
                     "recordingFrames": [str(path.resolve()) for path in args.review_frame],
                     "selectedRecording": {"remote_path": args.recording},

@@ -173,6 +173,7 @@ def test_finalize_builds_and_validates_schema3_package(tmp_path: Path) -> None:
     adb = FakeFinishAdb(remote_files)
     screenshot = "/sdcard/DCIM/Screenshots/Screenshot_Example.png"
     recording = "/sdcard/DCIM/Screen recordings/Example.mp4"
+    output_root = tmp_path / "chosen-evidence-output"
 
     result = finalize_evidence(
         bundle,
@@ -180,16 +181,20 @@ def test_finalize_builds_and_validates_schema3_package(tmp_path: Path) -> None:
         recording,
         content_visibility="visible",
         review_method="operator_confirmed_playback",
+        output_root=output_root,
         adb=adb,
     )
 
     package = Path(result["packagePath"])
     observations = json.loads((package / "observations.json").read_text(encoding="utf-8"))
     assert result["status"] == "success"
+    assert Path(result["outputRoot"]) == output_root.resolve()
+    assert package.parent.parent == output_root.resolve()
     assert observations["schema_version"] == 3
     assert observations["media"]["screenshot_count"] == 1
     assert observations["media"]["recording"]["content_visibility"] == "visible"
     assert observations["source"]["sha256"] == observations["source"]["copied_source_sha256"]
+    assert (package / "_READY").read_bytes() == b""
     assert (package / "videos" / "raw_install_test.mp4").is_file()
     assert not (bundle / ".apkba-pending-session.json").exists()
     assert all(serial == "PHONE-FINISH" for serial, _arguments in adb.calls)
@@ -277,4 +282,26 @@ def test_validator_rejects_forbidden_residue(tmp_path: Path) -> None:
     (package / "logs").mkdir()
 
     with pytest.raises(ScanFailure, match="禁止残留"):
+        validate_evidence_package(package, result["sourceSha256"])
+
+
+def test_validator_requires_empty_ready_marker(tmp_path: Path) -> None:
+    bundle, remote_files = make_finish_bundle(tmp_path)
+    result = finalize_evidence(
+        bundle,
+        ["/sdcard/DCIM/Screenshots/Screenshot_Example.png"],
+        "/sdcard/DCIM/Screen recordings/Example.mp4",
+        content_visibility="visible",
+        review_method="operator_confirmed_playback",
+        adb=FakeFinishAdb(remote_files),
+    )
+    package = Path(result["packagePath"])
+    ready_marker = package / "_READY"
+    ready_marker.unlink()
+
+    with pytest.raises(ScanFailure, match="0 字节的 _READY"):
+        validate_evidence_package(package, result["sourceSha256"])
+
+    ready_marker.write_bytes(b"not empty")
+    with pytest.raises(ScanFailure, match="0 字节的 _READY"):
         validate_evidence_package(package, result["sourceSha256"])

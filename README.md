@@ -74,11 +74,14 @@ python -m venv .venv
 
 .\.venv\Scripts\python.exe main.py finish `
   --bundle "E:\path\Example_Agent1_Intake" `
+  --output "E:\path\final-evidence-output" `
   --screenshot "/sdcard/DCIM/Screenshots/Screenshot_Example.png" `
   --recording "/sdcard/DCIM/Screen recordings/Example.mp4" `
   --visibility visible `
   --review-method operator_confirmed_playback
 ```
+
+桌面版会在最后的媒体确认窗口中让编辑手动选择最终证据包保存根目录，并记住上一次选择。验证通过的每个最终证据包根目录都会包含一个无扩展名、严格为 0 字节的 `_READY` 文件。
 
 运行测试：
 

@@ -7,7 +7,13 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDesktopServices,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDropEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -39,37 +45,77 @@ class DropCard(QFrame):
         self.extensions = extensions
         self.setAcceptDrops(True)
         self.setObjectName("dropCard")
-        self.setMinimumHeight(132)
+        self.setProperty("selected", False)
+        self.setProperty("dragActive", False)
+        self.setMinimumHeight(156)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
+
+        header = QHBoxLayout()
         self.title = QLabel(title)
         self.title.setObjectName("dropTitle")
+        self.status_label = QLabel("等待选择")
+        self.status_label.setObjectName("dropStatus")
+        header.addWidget(self.title)
+        header.addStretch()
+        header.addWidget(self.status_label)
+
         self.hint = QLabel(hint)
         self.hint.setObjectName("dropHint")
         self.hint.setWordWrap(True)
-        self.path_label = QLabel("尚未选择")
+        self.file_name_label = QLabel("尚未添加文件")
+        self.file_name_label.setObjectName("dropFileName")
+        self.file_name_label.setWordWrap(True)
+        self.path_label = QLabel("拖拽成功后会在这里显示文件名")
         self.path_label.setObjectName("pathLabel")
         self.path_label.setWordWrap(True)
-        layout.addWidget(self.title)
+        layout.addLayout(header)
         layout.addWidget(self.hint)
         layout.addStretch()
+        layout.addWidget(self.file_name_label)
         layout.addWidget(self.path_label)
 
     def accepts(self, path: Path) -> bool:
         return path.is_file() and path.suffix.lower() in self.extensions
 
     def set_path(self, path: str) -> None:
-        resolved = str(Path(path).resolve())
+        resolved_path = Path(path).resolve()
+        resolved = str(resolved_path)
+        self._set_visual_state("selected", True)
+        self.status_label.setText("✓ 已添加")
+        self.file_name_label.setText(resolved_path.name)
         self.path_label.setText(resolved)
+        self.setToolTip(resolved)
         self.path_label.setToolTip(resolved)
         self.path_changed.emit(resolved)
+
+    def _set_visual_state(self, name: str, value: bool) -> None:
+        widgets = (
+            self,
+            self.title,
+            self.status_label,
+            self.hint,
+            self.file_name_label,
+            self.path_label,
+        )
+        for widget in widgets:
+            widget.setProperty(name, value)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         if any(self.accepts(path) for path in paths):
+            self._set_visual_state("dragActive", True)
             event.acceptProposedAction()
 
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802
+        self._set_visual_state("dragActive", False)
+        event.accept()
+
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        self._set_visual_state("dragActive", False)
         for url in event.mimeData().urls():
             path = Path(url.toLocalFile())
             if self.accepts(path):
@@ -299,10 +345,26 @@ class MainWindow(QMainWindow):
             }
             QLabel#heroTitle { font-size: 29px; font-weight: 750; }
             QLabel#subtitle { color: #5a6980; font-size: 15px; max-width: 880px; }
-            QFrame#dropCard { background: white; border: 2px dashed #c8d4e5; border-radius: 14px; }
+            QFrame#dropCard {
+                background: white; border: 2px dashed #c8d4e5; border-radius: 14px;
+            }
             QFrame#dropCard:hover { border-color: #15a487; background: #fbfffd; }
+            QFrame#dropCard[dragActive="true"] {
+                background: #edfff9; border: 3px dashed #12a181;
+            }
+            QFrame#dropCard[selected="true"] {
+                background: #f0fbf7; border: 3px solid #0d9275;
+            }
             QLabel#dropTitle { font-size: 17px; font-weight: 700; }
+            QLabel#dropTitle[selected="true"] { color: #076b57; }
+            QLabel#dropStatus {
+                color: #64748b; background: #eef2f7; border-radius: 10px;
+                padding: 4px 10px; font-size: 12px; font-weight: 700;
+            }
+            QLabel#dropStatus[selected="true"] { color: white; background: #0d9275; }
             QLabel#dropHint, QLabel#pathLabel { color: #64748b; }
+            QLabel#dropFileName { color: #42536b; font-size: 14px; font-weight: 700; }
+            QLabel#dropFileName[selected="true"] { color: #075f4e; font-size: 15px; }
             QLabel#pathLabel { font-size: 12px; }
             QFrame#panel, QFrame#resultPanel {
                 background: white; border: 1px solid #dfe6ef; border-radius: 12px;
@@ -341,10 +403,26 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _set_source(self, path: str) -> None:
         self.source_path = path
+        self._update_file_selection_status()
 
     @Slot(str)
     def _set_icon(self, path: str) -> None:
         self.icon_path = path
+        self._update_file_selection_status()
+
+    def _update_file_selection_status(self) -> None:
+        if self.source_path and self.icon_path:
+            self.status_badge.setText("文件已就绪")
+            self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+            self.status_text.setText("安装包和图标均已添加，可以开始扫描。")
+        elif self.source_path:
+            self.status_badge.setText("已选择 1/2")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText("安装包已添加，再选择一个应用图标。")
+        elif self.icon_path:
+            self.status_badge.setText("已选择 1/2")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText("图标已添加，再选择一个 APK/XAPK。")
 
     def _choose_source(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

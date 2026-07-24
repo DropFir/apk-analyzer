@@ -463,20 +463,6 @@ class MediaReviewDialog(QDialog):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
 
-        title = QLabel(
-            f"{review.get('applicationLabel') or '当前应用'} · "
-            f"{review.get('packageName') or '包名未确认'}"
-        )
-        title.setStyleSheet("font-size:20px;font-weight:750")
-        help_text = QLabel(
-            "只勾选属于本次应用、设置或权限页面的截图。"
-            "录屏分类必须根据下方代表帧或完整回放确认。"
-        )
-        help_text.setWordWrap(True)
-        help_text.setStyleSheet("color:#58677d")
-        layout.addWidget(title)
-        layout.addWidget(help_text)
-
         media_layout = QHBoxLayout()
         media_layout.setSpacing(14)
 

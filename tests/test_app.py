@@ -38,12 +38,54 @@ def test_copy_handoff_message_puts_ready_text_on_clipboard(
     monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
     window = MainWindow()
     bundle = tmp_path / "agent1-handoff"
+    window.source_path = "old.apk"
+    window.icon_path = "old.webp"
     window.bundle_path = str(bundle)
 
     window._copy_handoff_message()
 
     assert QApplication.clipboard().text() == (f"好了。\n交接包：{bundle}")
     assert window.copy_button.text() == "✓ 已复制到剪贴板"
+    window.close()
+
+
+def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    window = MainWindow()
+    bundle = tmp_path / "agent1-handoff"
+    window._on_prepare_success(
+        {"app": {"applicationLabel": "Fixture", "packageName": "com.example.fixture"}},
+        {
+            "deviceModel": "Pixel",
+            "deviceSerial": "PHONE-A",
+            "launchStatus": "success",
+            "focusedActivity": "com.example.fixture/.MainActivity",
+        },
+        str(bundle),
+    )
+
+    assert window.capture_button.isHidden() is False
+    assert window._capture_device_serial == "PHONE-A"
+
+    window._on_capture_end_success(
+        {
+            "deviceModel": "Pixel",
+            "deviceSerial": "PHONE-A",
+            "deviceTime": "2026-07-24T12:00:00+0800",
+            "screenshotCount": 3,
+            "recordingCount": 1,
+        }
+    )
+    window._copy_handoff_message()
+
+    assert window.capture_button.isEnabled() is False
+    assert window.capture_button.text() == "✓ 本次取证边界已记录"
+    assert window.source_path == ""
+    assert window.icon_path == ""
+    assert "截图 3 张，录屏 1 段" in QApplication.clipboard().text()
+    assert "可以直接拖入下一份 APK" in window.status_text.text()
     window.close()
 
 

@@ -11,6 +11,7 @@ from apkba_analyzer.device import (
     AdbClient,
     device_session_lock,
     prepare_bundle,
+    record_media_capture_end,
     scan_create_and_prepare,
     select_xapk_splits,
 )
@@ -226,6 +227,39 @@ class FakePrepareAdb:
         }
 
 
+class FakeCaptureEndAdb:
+    def device_facts(self, serial: str):
+        return {"serial": serial, "model": "Test Phone"}
+
+    def focused_activity(self, _serial: str):
+        return "com.example.app/.DetailsActivity"
+
+    def media_snapshot(self, _serial: str):
+        return {
+            "device_epoch": 1770000100,
+            "device_time": "2026-07-23T10:01:40+0800",
+            "screenshots": [
+                {
+                    "modified_epoch_seconds": 1769999999.0,
+                    "size_bytes": 10,
+                    "remote_path": "/sdcard/DCIM/Screenshots/old.png",
+                },
+                {
+                    "modified_epoch_seconds": 1770000010.0,
+                    "size_bytes": 20,
+                    "remote_path": "/sdcard/DCIM/Screenshots/current.png",
+                },
+            ],
+            "recordings": [
+                {
+                    "modified_epoch_seconds": 1770000020.0,
+                    "size_bytes": 30,
+                    "remote_path": "/sdcard/DCIM/Screen recordings/current.mp4",
+                }
+            ],
+        }
+
+
 def make_bundle(tmp_path: Path) -> tuple[dict, Path]:
     bundle = tmp_path / "Intake"
     bundle.mkdir()
@@ -275,6 +309,37 @@ def test_prepare_writes_agent1_pending_session_without_capturing_media(
     flattened = " ".join(" ".join(arguments) for _serial, arguments in adb.calls)
     assert "screencap" not in flattened
     assert "screenrecord" not in flattened
+
+
+def test_record_media_capture_end_adds_a_bounded_snapshot_without_closing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+    prepare_bundle(report, bundle, "PHONE-1", adb=FakePrepareAdb())
+
+    result = record_media_capture_end(bundle, "PHONE-1", adb=FakeCaptureEndAdb())
+
+    pending = json.loads((bundle / ".apkba-pending-session.json").read_text(encoding="utf-8"))
+    capture_end = pending["media_capture_end"]
+    assert pending["status"] == "awaiting_manual_capture"
+    assert capture_end["device_epoch_seconds"] == 1770000100
+    assert capture_end["screenshot_count"] == 1
+    assert capture_end["recording_count"] == 1
+    assert capture_end["screenshots"][0]["remote_path"].endswith("current.png")
+    assert result["status"] == "capture_end_recorded"
+    assert result["deviceSerial"] == "PHONE-1"
+
+
+def test_record_media_capture_end_rejects_a_different_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+    prepare_bundle(report, bundle, "PHONE-1", adb=FakePrepareAdb())
+
+    with pytest.raises(ScanFailure, match="绑定的是手机 PHONE-1"):
+        record_media_capture_end(bundle, "PHONE-2", adb=FakeCaptureEndAdb())
 
 
 def test_prepare_uses_one_monkey_fallback_for_rejected_component(

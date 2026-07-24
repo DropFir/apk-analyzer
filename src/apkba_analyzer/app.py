@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from apkba_analyzer.device import AdbClient, scan_create_and_prepare
+from apkba_analyzer.device import AdbClient, record_media_capture_end, scan_create_and_prepare
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.scanner import SUPPORTED_IMAGES, SUPPORTED_SOURCES, scan_package
 
@@ -52,14 +52,14 @@ class DropCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 14)
 
-        header = QHBoxLayout()
+        header = QVBoxLayout()
+        header.setSpacing(6)
         self.title = QLabel(title)
         self.title.setObjectName("dropTitle")
         self.status_label = QLabel("等待选择")
         self.status_label.setObjectName("dropStatus")
         header.addWidget(self.title)
-        header.addStretch()
-        header.addWidget(self.status_label)
+        header.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.hint = QLabel(hint)
         self.hint.setObjectName("dropHint")
@@ -93,6 +93,16 @@ class DropCard(QFrame):
         self.setToolTip(resolved)
         self.path_label.setToolTip(resolved)
         self.path_changed.emit(resolved)
+
+    def clear_path(self) -> None:
+        self._set_visual_state("selected", False)
+        self.status_label.setText("等待选择")
+        self.file_name_label.clear()
+        self.file_name_label.setVisible(False)
+        self.path_label.clear()
+        self.path_label.setVisible(False)
+        self.setToolTip("")
+        self.path_label.setToolTip("")
 
     def _set_visual_state(self, name: str, value: bool) -> None:
         widgets = (
@@ -207,6 +217,24 @@ class PrepareWorker(QObject):
             self.failed.emit(str(error), traceback.format_exc())
 
 
+class CaptureEndWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    def __init__(self, bundle: str, serial: str):
+        super().__init__()
+        self.bundle = bundle
+        self.serial = serial
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = record_media_capture_end(Path(self.bundle), self.serial)
+            self.succeeded.emit(result)
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -216,6 +244,12 @@ class MainWindow(QMainWindow):
         self._selected_device_serial: str | None = None
         self._active_device_serial: str | None = None
         self._active_device_display = ""
+        self._capture_bundle_path = ""
+        self._capture_device_serial = ""
+        self._capture_device_display = ""
+        self._capture_completed = False
+        self._capture_screenshot_count = 0
+        self._capture_recording_count = 0
         self.thread: QThread | None = None
         self.worker: QObject | None = None
         self.copy_reset_timer = QTimer(self)
@@ -224,8 +258,8 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
         self.setAcceptDrops(True)
-        self.resize(840, 540)
-        self.setMinimumSize(700, 480)
+        self.resize(500, 720)
+        self.setMinimumSize(420, 560)
         self._build_ui()
         self._apply_styles()
 
@@ -241,26 +275,26 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
 
         cards = QGridLayout()
-        cards.setHorizontalSpacing(12)
+        cards.setHorizontalSpacing(0)
         cards.setVerticalSpacing(8)
         self.source_card = DropCard(
-            "① APK / XAPK / APKM",
+            "APK / XAPK / APKM",
             "拖拽或选择安装包",
             SUPPORTED_SOURCES,
         )
         self.icon_card = DropCard(
-            "② 应用图标",
+            "应用图标",
             "PNG / JPG / WebP / AVIF · 正方形",
             SUPPORTED_IMAGES,
         )
         cards.addWidget(self.source_card, 0, 0)
-        cards.addWidget(self.icon_card, 0, 1)
         choose_source = QPushButton("选择安装包")
         choose_icon = QPushButton("选择图标")
         choose_source.clicked.connect(self._choose_source)
         choose_icon.clicked.connect(self._choose_icon)
         cards.addWidget(choose_source, 1, 0)
-        cards.addWidget(choose_icon, 1, 1)
+        cards.addWidget(self.icon_card, 2, 0)
+        cards.addWidget(choose_icon, 3, 0)
         layout.addLayout(cards)
 
         output_frame = QFrame()
@@ -286,7 +320,7 @@ class MainWindow(QMainWindow):
         device_label.setObjectName("fieldLabel")
         self.device_combo = DeviceComboBox()
         self.device_combo.addItem("正在检查 USB 调试设备…", None)
-        self.device_combo.setMinimumWidth(260)
+        self.device_combo.setMinimumWidth(180)
         self.device_combo.setToolTip("每个窗口单独选择并绑定一台手机")
         self.device_combo.currentIndexChanged.connect(self._on_device_selection_changed)
         self.refresh_button = QPushButton("刷新")
@@ -339,6 +373,11 @@ class MainWindow(QMainWindow):
         self.copy_button.setObjectName("copyButton")
         self.copy_button.setVisible(False)
         self.copy_button.clicked.connect(self._copy_handoff_message)
+        self.capture_button = QPushButton("截图/录屏完成 · 记录边界")
+        self.capture_button.setObjectName("captureButton")
+        self.capture_button.setVisible(False)
+        self.capture_button.clicked.connect(self._start_capture_end)
+        result_layout.addWidget(self.capture_button)
         result_actions = QHBoxLayout()
         result_actions.addWidget(self.open_button)
         result_actions.addWidget(self.copy_button)
@@ -413,6 +452,13 @@ class MainWindow(QMainWindow):
                 background: #e5f7f1; color: #087763; border-color: #8bcfbd;
             }
             QPushButton#copyButton:hover { background: #d7f2e9; border-color: #0d9275; }
+            QPushButton#captureButton {
+                background: #087763; color: white; border-color: #087763; font-weight: 750;
+            }
+            QPushButton#captureButton:hover { background: #066653; }
+            QPushButton#captureButton:disabled {
+                background: #dce6e3; color: #58716a; border-color: #c7d6d2;
+            }
             QProgressBar { border: 0; background: #e4eaf2; border-radius: 4px; height: 8px; }
             QProgressBar::chunk { background: #17a88a; border-radius: 4px; }
             QLabel#statusBadge {
@@ -470,7 +516,20 @@ class MainWindow(QMainWindow):
         if path:
             self.output_edit.setText(path)
 
+    def _require_capture_end_before_next_task(self) -> bool:
+        if not self._capture_bundle_path or self._capture_completed:
+            return True
+        QMessageBox.information(
+            self,
+            "请先记录本次取证边界",
+            "当前 APK 仍在等待截图/录屏完成。请先点击“截图/录屏完成 · 记录边界”，"
+            "再开始下一份 APK，避免两次取证媒体混在一起。",
+        )
+        return False
+
     def _start_scan(self) -> None:
+        if not self._require_capture_end_before_next_task():
+            return
         output = self.output_edit.text().strip()
         if not self.source_path or not self.icon_path or not output:
             QMessageBox.information(self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。")
@@ -481,6 +540,7 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
         self.open_button.setVisible(False)
         self.copy_button.setVisible(False)
+        self._reset_capture_state()
         self.bundle_path = ""
         self.progress.setValue(1)
         self.status_badge.setText("扫描中")
@@ -504,6 +564,8 @@ class MainWindow(QMainWindow):
     def _start_prepare(self) -> None:
         output = self.output_edit.text().strip()
         serial = self.device_combo.currentData()
+        if not self._require_capture_end_before_next_task():
+            return
         if not self.source_path or not self.icon_path or not output:
             QMessageBox.information(self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。")
             return
@@ -520,6 +582,7 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
         self.open_button.setVisible(False)
         self.copy_button.setVisible(False)
+        self._reset_capture_state()
         self.bundle_path = ""
         self.progress.setValue(1)
         self.status_badge.setText("准备中")
@@ -734,8 +797,86 @@ class MainWindow(QMainWindow):
             "如果截图或录屏黑屏/被禁止，请在“好了”后明确写出来。"
         )
         self.bundle_path = bundle
+        self._capture_bundle_path = bundle
+        self._capture_device_serial = str(prepare_result.get("deviceSerial") or "")
+        self._capture_device_display = (
+            f"{prepare_result.get('deviceModel') or '未确认'} · "
+            f"{self._capture_device_serial or '序列号未确认'}"
+        )
+        self._capture_completed = False
+        self.capture_button.setText("截图/录屏完成 · 记录边界")
+        self.capture_button.setVisible(True)
+        self.capture_button.setEnabled(True)
         self.open_button.setVisible(True)
         self.copy_button.setVisible(True)
+
+    def _start_capture_end(self) -> None:
+        if not self._capture_bundle_path or not self._capture_device_serial:
+            QMessageBox.information(self, "没有待记录的取证", "请先完成一次“连接手机取证”。")
+            return
+        self._active_device_serial = self._capture_device_serial
+        self._active_device_display = self._capture_device_display
+        self._set_busy(True)
+        self.status_badge.setText("记录中")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText(
+            f"正在读取截图/录屏结束边界 ｜ 目标：{self._capture_device_display}"
+        )
+        self.thread = QThread(self)
+        self.worker = CaptureEndWorker(
+            self._capture_bundle_path,
+            self._capture_device_serial,
+        )
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.succeeded.connect(self._on_capture_end_success)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_capture_end_success(self, result: object) -> None:
+        self._set_busy(False)
+        capture_result = dict(result)
+        screenshot_count = int(capture_result.get("screenshotCount") or 0)
+        recording_count = int(capture_result.get("recordingCount") or 0)
+        self._capture_completed = True
+        self._capture_screenshot_count = screenshot_count
+        self._capture_recording_count = recording_count
+        self.source_path = ""
+        self.icon_path = ""
+        self.source_card.clear_path()
+        self.icon_card.clear_path()
+        self.capture_button.setText("✓ 本次取证边界已记录")
+        self.capture_button.setEnabled(False)
+        if screenshot_count and recording_count:
+            self.status_badge.setText("本次已封口")
+            self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+            self.status_text.setText("结束边界已记录，可以直接拖入下一份 APK 和图标。")
+        else:
+            missing = []
+            if not screenshot_count:
+                missing.append("截图")
+            if not recording_count:
+                missing.append("录屏")
+            self.status_badge.setText("边界已记录 · 有提醒")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText(
+                f"已记录结束边界，但未发现新增{'和'.join(missing)}；"
+                "如属黑屏/禁止截图，请在交接时说明。"
+            )
+        self.detail_label.setText(
+            f"手机：{capture_result.get('deviceModel') or '未确认'}"
+            f" · {capture_result.get('deviceSerial') or '序列号未确认'}\n"
+            f"结束时间：{capture_result.get('deviceTime') or '未确认'}\n"
+            f"本次边界内媒体：截图 {screenshot_count} 张 · 录屏 {recording_count} 段\n\n"
+            "Agent1 将只读取“准备前基线”之后、这次结束边界之前的媒体，"
+            "下一份 APK 的截图和录屏不会混入本次。"
+        )
 
     @Slot(str, str)
     def _on_failure(self, message: str, detail: str) -> None:
@@ -753,6 +894,19 @@ class MainWindow(QMainWindow):
         self.prepare_button.setEnabled(not busy)
         self.refresh_button.setEnabled(not busy)
         self.device_combo.setEnabled(not busy)
+        self.capture_button.setEnabled(
+            not busy and bool(self._capture_bundle_path) and not self._capture_completed
+        )
+
+    def _reset_capture_state(self) -> None:
+        self._capture_bundle_path = ""
+        self._capture_device_serial = ""
+        self._capture_device_display = ""
+        self._capture_completed = False
+        self._capture_screenshot_count = 0
+        self._capture_recording_count = 0
+        self.capture_button.setVisible(False)
+        self.capture_button.setText("截图/录屏完成 · 记录边界")
 
     @Slot()
     def _thread_finished(self) -> None:
@@ -838,7 +992,15 @@ class MainWindow(QMainWindow):
     def _copy_handoff_message(self) -> None:
         if not self.bundle_path:
             return
-        message = f"好了。\n交接包：{self.bundle_path}"
+        if self._capture_completed:
+            message = (
+                "好了，已记录截图/录屏结束边界"
+                f"（截图 {self._capture_screenshot_count} 张，"
+                f"录屏 {self._capture_recording_count} 段）。\n"
+                f"交接包：{self.bundle_path}"
+            )
+        else:
+            message = f"好了。\n交接包：{self.bundle_path}"
         QApplication.clipboard().setText(message)
         self.copy_button.setText("✓ 已复制到剪贴板")
         self.copy_reset_timer.start(2200)

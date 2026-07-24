@@ -465,6 +465,93 @@ def _iso_now() -> str:
     return datetime.now(UTC).astimezone().isoformat()
 
 
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def record_media_capture_end(
+    bundle: Path,
+    serial: str,
+    *,
+    adb: AdbClient | None = None,
+) -> dict[str, Any]:
+    """Record the upper media boundary for one prepared manual-capture session."""
+
+    bundle = bundle.resolve()
+    pending_path = bundle / PENDING_FILE_NAME
+    if not pending_path.is_file():
+        raise ScanFailure(f"交接包中没有等待取证的会话：{pending_path}")
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ScanFailure(f"无法读取待处理取证记录：{pending_path}") from error
+    if not isinstance(pending, dict):
+        raise ScanFailure("待处理取证记录格式无效。")
+
+    device = pending.get("device")
+    prepared_serial = str(device.get("serial") or "") if isinstance(device, dict) else ""
+    if not prepared_serial:
+        raise ScanFailure("待处理取证记录中没有手机序列号。")
+    if serial != prepared_serial:
+        raise ScanFailure(
+            f"本次取证绑定的是手机 {prepared_serial}，不能用手机 {serial} 记录结束边界。"
+        )
+
+    baseline = pending.get("media_baseline")
+    if not isinstance(baseline, dict):
+        raise ScanFailure("待处理取证记录中没有截图/录屏前基线。")
+    try:
+        baseline_epoch = float(baseline["device_epoch_seconds"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ScanFailure("截图/录屏前基线时间无效。") from error
+
+    client = adb or AdbClient()
+    with device_session_lock(serial):
+        facts = client.device_facts(serial)
+        snapshot = client.media_snapshot(serial)
+        focused = client.focused_activity(serial)
+
+    screenshots = [
+        item
+        for item in snapshot["screenshots"]
+        if float(item["modified_epoch_seconds"]) > baseline_epoch
+    ]
+    recordings = [
+        item
+        for item in snapshot["recordings"]
+        if float(item["modified_epoch_seconds"]) > baseline_epoch
+    ]
+    capture_end = {
+        "status": "recorded",
+        "recorded_local": _iso_now(),
+        "device_epoch_seconds": snapshot["device_epoch"],
+        "device_time": snapshot["device_time"],
+        "focused_activity": focused,
+        "screenshot_count": len(screenshots),
+        "recording_count": len(recordings),
+        "screenshots": screenshots,
+        "recordings": recordings,
+    }
+    pending["media_capture_end"] = capture_end
+    _write_json_atomic(pending_path, pending)
+    return {
+        "status": "capture_end_recorded",
+        "bundlePath": str(bundle),
+        "pendingPath": str(pending_path),
+        "deviceSerial": serial,
+        "deviceModel": facts.get("model"),
+        "deviceTime": snapshot["device_time"],
+        "focusedActivity": focused,
+        "screenshotCount": len(screenshots),
+        "recordingCount": len(recordings),
+    }
+
+
 def prepare_bundle(
     report: dict[str, Any],
     bundle: Path,
@@ -689,12 +776,7 @@ def prepare_bundle(
             "elapsed_ms": round((time.monotonic() - overall_started) * 1000),
         },
     }
-    temporary_path = pending_path.with_suffix(".json.tmp")
-    temporary_path.write_text(
-        json.dumps(pending, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(pending_path)
+    _write_json_atomic(pending_path, pending)
     _progress(progress, 100, "准备完成，请在手机上手动截图和录屏。")
     return {
         "status": "awaiting_manual_capture",

@@ -42,8 +42,7 @@ def test_copy_handoff_message_puts_ready_text_on_clipboard(
 
     assert QApplication.clipboard().text() == (
         "好了。\n"
-        f"交接包路径：{bundle}\n"
-        "请读取整个交接包，并继续 Agent1 后续流程。"
+        f"交接包：{bundle}"
     )
     assert window.copy_button.text() == "✓ 已复制到剪贴板"
     window.close()

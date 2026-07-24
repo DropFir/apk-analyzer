@@ -47,9 +47,9 @@ class DropCard(QFrame):
         self.setObjectName("dropCard")
         self.setProperty("selected", False)
         self.setProperty("dragActive", False)
-        self.setMinimumHeight(156)
+        self.setMinimumHeight(128)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setContentsMargins(18, 14, 18, 14)
 
         header = QHBoxLayout()
         self.title = QLabel(title)
@@ -63,12 +63,14 @@ class DropCard(QFrame):
         self.hint = QLabel(hint)
         self.hint.setObjectName("dropHint")
         self.hint.setWordWrap(True)
-        self.file_name_label = QLabel("尚未添加文件")
+        self.file_name_label = QLabel("")
         self.file_name_label.setObjectName("dropFileName")
         self.file_name_label.setWordWrap(True)
-        self.path_label = QLabel("拖拽成功后会在这里显示文件名")
+        self.file_name_label.setVisible(False)
+        self.path_label = QLabel("")
         self.path_label.setObjectName("pathLabel")
         self.path_label.setWordWrap(True)
+        self.path_label.setVisible(False)
         layout.addLayout(header)
         layout.addWidget(self.hint)
         layout.addStretch()
@@ -84,7 +86,9 @@ class DropCard(QFrame):
         self._set_visual_state("selected", True)
         self.status_label.setText("✓ 已添加")
         self.file_name_label.setText(resolved_path.name)
+        self.file_name_label.setVisible(True)
         self.path_label.setText(resolved)
+        self.path_label.setVisible(True)
         self.setToolTip(resolved)
         self.path_label.setToolTip(resolved)
         self.path_changed.emit(resolved)
@@ -205,8 +209,8 @@ class MainWindow(QMainWindow):
         self.copy_reset_timer.timeout.connect(self._reset_copy_button)
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
-        self.resize(1080, 760)
-        self.setMinimumSize(860, 640)
+        self.resize(840, 540)
+        self.setMinimumSize(700, 480)
         self._build_ui()
         self._apply_styles()
 
@@ -218,33 +222,20 @@ class MainWindow(QMainWindow):
         scroll.setWidget(root)
         self.setCentralWidget(scroll)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(42, 34, 42, 40)
-        layout.setSpacing(20)
-
-        eyebrow = QLabel("APKBA · AGENT1 INTAKE")
-        eyebrow.setObjectName("eyebrow")
-        title = QLabel("把安装包交给工具，剩下的交给 Agent1")
-        title.setObjectName("heroTitle")
-        subtitle = QLabel(
-            "拖入一个 APK/XAPK 和一个图标。工具会在本机完成完整性、manifest、split 与签名检查，"
-            "然后生成可直接交给 Agent1 的文件夹。不会上传文件。"
-        )
-        subtitle.setObjectName("subtitle")
-        subtitle.setWordWrap(True)
-        layout.addWidget(eyebrow)
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        layout.setContentsMargins(24, 18, 24, 22)
+        layout.setSpacing(12)
 
         cards = QGridLayout()
-        cards.setHorizontalSpacing(18)
+        cards.setHorizontalSpacing(12)
+        cards.setVerticalSpacing(8)
         self.source_card = DropCard(
             "① APK / XAPK",
-            "拖到这里，或点击下方按钮选择安装包",
+            "拖拽或选择安装包",
             SUPPORTED_SOURCES,
         )
         self.icon_card = DropCard(
             "② 应用图标",
-            "支持 PNG、JPG、WebP、AVIF；必须为正方形",
+            "PNG / JPG / WebP / AVIF · 正方形",
             SUPPORTED_IMAGES,
         )
         cards.addWidget(self.source_card, 0, 0)
@@ -260,11 +251,11 @@ class MainWindow(QMainWindow):
         output_frame = QFrame()
         output_frame.setObjectName("panel")
         output_layout = QHBoxLayout(output_frame)
-        output_layout.setContentsMargins(20, 16, 20, 16)
+        output_layout.setContentsMargins(14, 10, 14, 10)
         output_label = QLabel("输出位置")
         output_label.setObjectName("fieldLabel")
         self.output_edit = QLineEdit(str(self.settings.value("output", Path.home() / "Desktop")))
-        self.output_edit.setPlaceholderText("选择保存 Agent1 交接包的位置")
+        self.output_edit.setPlaceholderText("交接包保存位置")
         choose_output = QPushButton("浏览…")
         choose_output.clicked.connect(self._choose_output)
         output_layout.addWidget(output_label)
@@ -275,13 +266,13 @@ class MainWindow(QMainWindow):
         device_frame = QFrame()
         device_frame.setObjectName("panel")
         device_layout = QHBoxLayout(device_frame)
-        device_layout.setContentsMargins(20, 16, 20, 16)
+        device_layout.setContentsMargins(14, 10, 14, 10)
         device_label = QLabel("取证手机")
         device_label.setObjectName("fieldLabel")
         self.device_combo = QComboBox()
         self.device_combo.addItem("正在检查 USB 调试设备…", None)
-        self.device_combo.setMinimumWidth(360)
-        self.refresh_button = QPushButton("刷新设备")
+        self.device_combo.setMinimumWidth(260)
+        self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self._refresh_devices)
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo, 1)
@@ -289,16 +280,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(device_frame)
 
         action_row = QHBoxLayout()
-        trust = QLabel("● 静态扫描不联网 · 取证模式只操作明确选择的手机")
-        trust.setObjectName("trust")
-        self.scan_button = QPushButton("开始扫描并生成交接包")
-        self.scan_button.setMinimumHeight(48)
+        self.scan_button = QPushButton("扫描并生成交接包")
+        self.scan_button.setMinimumHeight(42)
         self.scan_button.clicked.connect(self._start_scan)
-        self.prepare_button = QPushButton("连接手机并开始取证")
+        self.prepare_button = QPushButton("连接手机取证")
         self.prepare_button.setObjectName("primaryButton")
-        self.prepare_button.setMinimumHeight(48)
+        self.prepare_button.setMinimumHeight(42)
         self.prepare_button.clicked.connect(self._start_prepare)
-        action_row.addWidget(trust)
         action_row.addStretch()
         action_row.addWidget(self.scan_button)
         action_row.addWidget(self.prepare_button)
@@ -313,11 +301,11 @@ class MainWindow(QMainWindow):
         self.result_panel = QFrame()
         self.result_panel.setObjectName("resultPanel")
         result_layout = QVBoxLayout(self.result_panel)
-        result_layout.setContentsMargins(22, 18, 22, 20)
+        result_layout.setContentsMargins(16, 12, 16, 14)
         result_top = QHBoxLayout()
         self.status_badge = QLabel("等待文件")
         self.status_badge.setObjectName("statusBadge")
-        self.status_text = QLabel("选择两个文件后即可开始。")
+        self.status_text = QLabel("请选择安装包和图标。")
         self.status_text.setObjectName("statusText")
         result_top.addWidget(self.status_badge)
         result_top.addWidget(self.status_text, 1)
@@ -330,7 +318,7 @@ class MainWindow(QMainWindow):
         self.open_button = QPushButton("打开交接包")
         self.open_button.setVisible(False)
         self.open_button.clicked.connect(self._open_bundle)
-        self.copy_button = QPushButton("复制给 Codex 的文案")
+        self.copy_button = QPushButton("复制交接文案")
         self.copy_button.setObjectName("copyButton")
         self.copy_button.setVisible(False)
         self.copy_button.clicked.connect(self._copy_handoff_message)
@@ -351,11 +339,6 @@ class MainWindow(QMainWindow):
             """
             QMainWindow, QScrollArea, QWidget { background: #f5f7fb; color: #17233b; }
             QLabel { background: transparent; }
-            QLabel#eyebrow {
-                color: #087763; font-size: 12px; font-weight: 800; letter-spacing: 1px;
-            }
-            QLabel#heroTitle { font-size: 29px; font-weight: 750; }
-            QLabel#subtitle { color: #5a6980; font-size: 15px; max-width: 880px; }
             QFrame#dropCard {
                 background: white; border: 2px dashed #c8d4e5; border-radius: 14px;
             }
@@ -403,7 +386,6 @@ class MainWindow(QMainWindow):
                 background: #e5f7f1; color: #087763; border-color: #8bcfbd;
             }
             QPushButton#copyButton:hover { background: #d7f2e9; border-color: #0d9275; }
-            QLabel#trust { color: #087763; font-size: 13px; }
             QProgressBar { border: 0; background: #e4eaf2; border-radius: 4px; height: 8px; }
             QProgressBar::chunk { background: #17a88a; border-radius: 4px; }
             QLabel#statusBadge {
@@ -667,15 +649,14 @@ class MainWindow(QMainWindow):
             return
         message = (
             "好了。\n"
-            f"交接包路径：{self.bundle_path}\n"
-            "请读取整个交接包，并继续 Agent1 后续流程。"
+            f"交接包：{self.bundle_path}"
         )
         QApplication.clipboard().setText(message)
         self.copy_button.setText("✓ 已复制到剪贴板")
         self.copy_reset_timer.start(2200)
 
     def _reset_copy_button(self) -> None:
-        self.copy_button.setText("复制给 Codex 的文案")
+        self.copy_button.setText("复制交接文案")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self.thread and self.thread.isRunning():

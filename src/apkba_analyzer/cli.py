@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from apkba_analyzer.device import AdbClient, scan_create_and_prepare
+from apkba_analyzer.finish import finalize_evidence, finish_preflight
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.models import ScanFailure
 from apkba_analyzer.scanner import scan_package
@@ -34,6 +35,39 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly allow ADB's low-target-SDK compatibility install on the test device",
     )
+    preflight = subparsers.add_parser(
+        "finish-preflight",
+        help="freeze the capture boundary and list media candidates",
+    )
+    preflight.add_argument("--bundle", required=True, type=Path)
+    finish = subparsers.add_parser(
+        "finish",
+        help="create and validate a schema-3 evidence package from confirmed media",
+    )
+    finish.add_argument("--bundle", required=True, type=Path)
+    finish.add_argument("--screenshot", action="append", default=[])
+    finish.add_argument("--recording", required=True)
+    finish.add_argument(
+        "--visibility",
+        required=True,
+        choices=(
+            "visible",
+            "protected_black_screen",
+            "partially_visible_protected_content",
+        ),
+    )
+    finish.add_argument(
+        "--review-method",
+        required=True,
+        choices=(
+            "representative_frame_visual_review",
+            "operator_confirmed_playback",
+            "representative_frame_and_operator_report",
+        ),
+    )
+    finish.add_argument("--operator-reported-protected-media", action="store_true")
+    finish.add_argument("--restriction-image", type=Path)
+    finish.add_argument("--review-frame", action="append", type=Path, default=[])
     subparsers.add_parser("devices", help="list USB-debugging devices without changing them")
     subparsers.add_parser("gui", help="open the desktop application")
     return parser
@@ -79,6 +113,36 @@ def main(argv: list[str] | None = None) -> int:
                     indent=2,
                 )
             )
+            return 0
+        if args.command == "finish-preflight":
+            print(
+                json.dumps(
+                    finish_preflight(args.bundle),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "finish":
+            missing_frames = [path for path in args.review_frame if not path.is_file()]
+            if missing_frames:
+                raise ScanFailure(f"代表帧不存在：{missing_frames[0]}")
+            result = finalize_evidence(
+                args.bundle,
+                args.screenshot,
+                args.recording,
+                content_visibility=args.visibility,
+                review_method=args.review_method,
+                operator_reported_protected_media=(
+                    args.operator_reported_protected_media
+                ),
+                local_restriction_image=args.restriction_image,
+                review={
+                    "recordingFrames": [str(path.resolve()) for path in args.review_frame],
+                    "selectedRecording": {"remote_path": args.recording},
+                },
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         report = scan_package(args.source, args.icon, profile=args.profile)
         payload: dict[str, object] = {"report": report}

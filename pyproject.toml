@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apkba-analyzer"
-version = "0.2.0"
-description = "Editor-facing APK/XAPK analyzer and device preparation tool for APKBA Agent1"
+version = "0.3.0"
+description = "Editor-facing APK/XAPK analyzer and end-to-end evidence packaging tool"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -29,6 +29,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+apkba_analyzer = ["assets/*.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -35,6 +35,7 @@ fi
   --paths "$ROOT/src" \
   --collect-data androguard \
   --hidden-import androguard.core.apk \
+  --add-data "$ROOT/src/apkba_analyzer/assets:assets" \
   --add-binary "$ADB:platform-tools" \
   "$ROOT/main.py"
 

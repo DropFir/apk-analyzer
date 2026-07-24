@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
@@ -14,15 +15,21 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
     QDropEvent,
+    QPixmap,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -35,6 +42,12 @@ from PySide6.QtWidgets import (
 )
 
 from apkba_analyzer.device import AdbClient, record_media_capture_end, scan_create_and_prepare
+from apkba_analyzer.finish import (
+    cleanup_media_review,
+    finalize_evidence,
+    finish_preflight,
+    prepare_media_review,
+)
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.scanner import SUPPORTED_IMAGES, SUPPORTED_SOURCES, scan_package
 
@@ -251,6 +264,297 @@ class CaptureEndWorker(QObject):
             self.failed.emit(str(error), traceback.format_exc())
 
 
+class FinishPreflightWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    def __init__(self, bundle: str):
+        super().__init__()
+        self.bundle = bundle
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(finish_preflight(self.bundle))
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
+class MediaReviewWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    def __init__(self, bundle: str, recording_remote_path: str):
+        super().__init__()
+        self.bundle = bundle
+        self.recording_remote_path = recording_remote_path
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(
+                prepare_media_review(self.bundle, self.recording_remote_path)
+            )
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
+class FinalizeWorker(QObject):
+    progress = Signal(int, str)
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    def __init__(self, review: dict[str, object], choices: dict[str, object]):
+        super().__init__()
+        self.review = review
+        self.choices = choices
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.progress.emit(84, "正在拉取确认的媒体并生成证据包…")
+            result = finalize_evidence(
+                str(self.review["bundlePath"]),
+                list(self.choices["selectedScreenshotPaths"]),
+                str(self.review["selectedRecording"]["remote_path"]),
+                content_visibility=str(self.choices["contentVisibility"]),
+                review_method=str(self.choices["reviewMethod"]),
+                operator_reported_protected_media=bool(
+                    self.choices["operatorReportedProtectedMedia"]
+                ),
+                local_restriction_image=(
+                    str(self.choices["localRestrictionImage"])
+                    if self.choices.get("localRestrictionImage")
+                    else None
+                ),
+                review=self.review,
+            )
+            self.progress.emit(100, "证据包已生成并通过验证。")
+            self.succeeded.emit(result)
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
+class MediaReviewDialog(QDialog):
+    """One explicit local review replaces Agent1's filename/frame judgment."""
+
+    def __init__(self, review: dict[str, object], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.review = review
+        self.screenshot_checks: dict[str, QCheckBox] = {}
+        self.setWindowTitle("确认本次截图与录屏")
+        self.resize(900, 760)
+        self.setMinimumSize(720, 580)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel(
+            f"{review.get('applicationLabel') or '当前应用'} · "
+            f"{review.get('packageName') or '包名未确认'}"
+        )
+        title.setStyleSheet("font-size:20px;font-weight:750")
+        help_text = QLabel(
+            "只勾选属于本次应用、设置或权限页面的截图。"
+            "录屏分类必须根据下方代表帧或完整回放确认。"
+        )
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet("color:#58677d")
+        layout.addWidget(title)
+        layout.addWidget(help_text)
+
+        screenshot_group = QGroupBox("截图（逐张确认）")
+        screenshot_layout = QVBoxLayout(screenshot_group)
+        screenshot_scroll = QScrollArea()
+        screenshot_scroll.setWidgetResizable(True)
+        screenshot_content = QWidget()
+        screenshot_rows = QGridLayout(screenshot_content)
+        screenshot_rows.setHorizontalSpacing(14)
+        screenshot_rows.setVerticalSpacing(12)
+        screenshots = list(review.get("screenshots") or [])
+        suggested = set(review.get("suggestedScreenshotPaths") or [])
+        default_all = not suggested
+        for row_index, record in enumerate(screenshots):
+            remote_path = str(record.get("remote_path") or "")
+            check = QCheckBox(str(record.get("file_name") or Path(remote_path).name))
+            check.setChecked(default_all or remote_path in suggested)
+            check.setToolTip(remote_path)
+            self.screenshot_checks[remote_path] = check
+            preview = QLabel()
+            preview.setFixedSize(96, 170)
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview.setStyleSheet("background:#eef2f7;border:1px solid #d8e1ec")
+            pixmap = QPixmap(str(record.get("localPath") or ""))
+            if not pixmap.isNull():
+                preview.setPixmap(
+                    pixmap.scaled(
+                        preview.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            screenshot_rows.addWidget(preview, row_index, 0)
+            screenshot_rows.addWidget(check, row_index, 1)
+        if not screenshots:
+            screenshot_rows.addWidget(QLabel("本次边界内没有发现设备截图。"), 0, 0, 1, 2)
+        screenshot_rows.setColumnStretch(1, 1)
+        screenshot_scroll.setWidget(screenshot_content)
+        screenshot_scroll.setMaximumHeight(250)
+        screenshot_layout.addWidget(screenshot_scroll)
+        layout.addWidget(screenshot_group)
+
+        restriction_row = QHBoxLayout()
+        restriction_label = QLabel("截图被禁止时的本地说明图")
+        self.restriction_edit = QLineEdit()
+        self.restriction_edit.setPlaceholderText("正常有截图时留空")
+        restriction_button = QPushButton("选择…")
+        restriction_button.clicked.connect(self._choose_restriction_image)
+        restriction_row.addWidget(restriction_label)
+        restriction_row.addWidget(self.restriction_edit, 1)
+        restriction_row.addWidget(restriction_button)
+        layout.addLayout(restriction_row)
+
+        recording_group = QGroupBox("录屏内容审查")
+        recording_layout = QVBoxLayout(recording_group)
+        recording_name = QLabel(
+            str((review.get("selectedRecording") or {}).get("file_name") or "当前录屏")
+        )
+        recording_name.setStyleSheet("font-weight:700")
+        recording_layout.addWidget(recording_name)
+        frame_row = QHBoxLayout()
+        frames = list(review.get("recordingFrames") or [])
+        for frame_path in frames:
+            preview = QLabel()
+            preview.setFixedSize(130, 210)
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview.setStyleSheet("background:#111;border:1px solid #d8e1ec")
+            pixmap = QPixmap(str(frame_path))
+            if not pixmap.isNull():
+                preview.setPixmap(
+                    pixmap.scaled(
+                        preview.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            frame_row.addWidget(preview)
+        if not frames:
+            missing_frames = QLabel(
+                "未能生成代表帧，请点击“打开完整录屏”并在播放器中确认。"
+            )
+            missing_frames.setWordWrap(True)
+            frame_row.addWidget(missing_frames)
+        frame_row.addStretch()
+        recording_layout.addLayout(frame_row)
+        recording_controls = QHBoxLayout()
+        open_recording = QPushButton("打开完整录屏")
+        open_recording.clicked.connect(self._open_recording)
+        recording_controls.addWidget(open_recording)
+        recording_controls.addWidget(QLabel("内容分类"))
+        self.visibility_combo = QComboBox()
+        self.visibility_combo.addItem("可见应用内部 UI", "visible")
+        self.visibility_combo.addItem("黑屏 / 禁止录屏", "protected_black_screen")
+        self.visibility_combo.addItem(
+            "部分可见但含受保护内容",
+            "partially_visible_protected_content",
+        )
+        suggestion = review.get("visibilitySuggestion")
+        suggested_index = self.visibility_combo.findData(suggestion)
+        if suggested_index >= 0:
+            self.visibility_combo.setCurrentIndex(suggested_index)
+        recording_controls.addWidget(self.visibility_combo, 1)
+        recording_layout.addLayout(recording_controls)
+        suggestion_text = (
+            "程序帧分析建议：黑屏 / 受保护"
+            if suggestion == "protected_black_screen"
+            else "程序帧分析建议：可见"
+            if suggestion == "visible"
+            else "程序未能自动判断，请回放确认"
+        )
+        self.suggestion_label = QLabel(suggestion_text)
+        self.suggestion_label.setStyleSheet("color:#7d5800")
+        recording_layout.addWidget(self.suggestion_label)
+        layout.addWidget(recording_group)
+
+        self.confirm_check = QCheckBox(
+            "我已检查勾选的截图和录屏代表帧/完整回放，确认均属于本次应用取证"
+        )
+        layout.addWidget(self.confirm_check)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("生成证据包")
+        self.buttons.accepted.connect(self._validate_and_accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def _choose_restriction_image(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "选择截图被禁止的说明图片",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.avif)",
+        )
+        if path:
+            self.restriction_edit.setText(path)
+
+    def _open_recording(self) -> None:
+        path = str(self.review.get("localRecordingPath") or "")
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _validate_and_accept(self) -> None:
+        selected = [
+            remote_path
+            for remote_path, check in self.screenshot_checks.items()
+            if check.isChecked()
+        ]
+        restriction = self.restriction_edit.text().strip()
+        visibility = str(self.visibility_combo.currentData() or "")
+        frames = list(self.review.get("recordingFrames") or [])
+        if not selected and not restriction:
+            QMessageBox.information(
+                self,
+                "还差截图证据",
+                "请至少勾选一张截图；如果应用禁止截图，请选择本地说明图片。",
+            )
+            return
+        if visibility != "visible" and not frames:
+            QMessageBox.information(
+                self,
+                "缺少代表帧",
+                "受保护录屏必须同时检查代表帧。当前无法生成代表帧，"
+                "请先在电脑安装 ffmpeg 后重新审查。",
+            )
+            return
+        if not self.confirm_check.isChecked():
+            QMessageBox.information(self, "请确认审查", "请勾选最后一项确认后再生成。")
+            return
+        self.accept()
+
+    def choices(self) -> dict[str, object]:
+        visibility = str(self.visibility_combo.currentData())
+        protected = visibility != "visible"
+        frames = list(self.review.get("recordingFrames") or [])
+        if protected:
+            review_method = "representative_frame_and_operator_report"
+        elif frames:
+            review_method = "representative_frame_visual_review"
+        else:
+            review_method = "operator_confirmed_playback"
+        return {
+            "selectedScreenshotPaths": [
+                remote_path
+                for remote_path, check in self.screenshot_checks.items()
+                if check.isChecked()
+            ],
+            "localRestrictionImage": self.restriction_edit.text().strip() or None,
+            "contentVisibility": visibility,
+            "reviewMethod": review_method,
+            "operatorReportedProtectedMedia": protected,
+        }
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -266,6 +570,9 @@ class MainWindow(QMainWindow):
         self._capture_completed = False
         self._capture_screenshot_count = 0
         self._capture_recording_count = 0
+        self._finish_bundle_path = ""
+        self._finish_review: dict[str, object] | None = None
+        self._deferred_action: object | None = None
         self.thread: QThread | None = None
         self.worker: QObject | None = None
         self.copy_reset_timer = QTimer(self)
@@ -395,6 +702,9 @@ class MainWindow(QMainWindow):
         self.capture_button.clicked.connect(self._start_capture_end)
         result_layout.addWidget(self.capture_button)
         result_actions = QHBoxLayout()
+        self.finish_button = QPushButton("完成已有取证")
+        self.finish_button.clicked.connect(self._start_finish)
+        result_actions.addWidget(self.finish_button)
         result_actions.addWidget(self.open_button)
         result_actions.addWidget(self.copy_button)
         result_actions.addStretch()
@@ -934,6 +1244,188 @@ class MainWindow(QMainWindow):
             "Agent1 将只读取“准备前基线”之后、这次结束边界之前的媒体，"
             "下一份 APK 的截图和录屏不会混入本次。"
         )
+        self.finish_button.setText("审查媒体并生成证据包")
+        self.finish_button.setEnabled(True)
+        self._finish_bundle_path = self._capture_bundle_path
+        self._run_after_current_thread(self._start_finish)
+
+    def _start_finish(self) -> None:
+        candidate = (
+            self._finish_bundle_path
+            or self._capture_bundle_path
+            or (
+                self.bundle_path
+                if self.bundle_path
+                and (Path(self.bundle_path) / ".apkba-pending-session.json").is_file()
+                else ""
+            )
+        )
+        if not candidate:
+            candidate = QFileDialog.getExistingDirectory(
+                self,
+                "选择含 .apkba-pending-session.json 的交接文件夹",
+                self.output_edit.text(),
+            )
+        if not candidate:
+            return
+        pending_path = Path(candidate) / ".apkba-pending-session.json"
+        if not pending_path.is_file():
+            QMessageBox.information(
+                self,
+                "不是待完成交接包",
+                "所选文件夹中没有 .apkba-pending-session.json。",
+            )
+            return
+        self._finish_bundle_path = str(Path(candidate).resolve())
+        self._set_busy(True)
+        self.progress.setValue(72)
+        self.status_badge.setText("媒体预检")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText("正在冻结结束边界并核对本次截图和录屏…")
+        self.thread = QThread(self)
+        self.worker = FinishPreflightWorker(self._finish_bundle_path)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.succeeded.connect(self._on_finish_preflight_success)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_finish_preflight_success(self, result: object) -> None:
+        preflight = dict(result)
+        recordings = list(preflight.get("recordings") or [])
+        if not recordings:
+            self._set_busy(False)
+            self.status_badge.setText("缺少录屏")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText("本次基线和结束边界之间没有发现录屏，尚未生成证据包。")
+            self.detail_label.setText(
+                "请在手机上为当前应用补录一段视频。由于结束边界已经封口，"
+                "补录后需要重新开始该应用的一次取证，避免混入下一任务媒体。"
+            )
+            return
+        if len(recordings) == 1:
+            selected_recording = recordings[0]
+        else:
+            labels = [
+                f"{record.get('file_name')} · {record.get('size_bytes')} bytes"
+                for record in recordings
+            ]
+            selected_label, accepted = QInputDialog.getItem(
+                self,
+                "选择本次录屏",
+                "发现多段录屏，请选择属于当前应用的一段：",
+                labels,
+                0,
+                False,
+            )
+            if not accepted:
+                self._set_busy(False)
+                self.status_text.setText("已取消媒体审查，取证会话仍保留。")
+                return
+            selected_recording = recordings[labels.index(selected_label)]
+        self._finish_bundle_path = str(preflight["bundlePath"])
+        recording_path = str(selected_recording["remote_path"])
+        self._run_after_current_thread(
+            lambda: self._start_media_review(recording_path)
+        )
+
+    def _start_media_review(self, recording_remote_path: str) -> None:
+        self._set_busy(True)
+        self.progress.setValue(78)
+        self.status_badge.setText("读取媒体")
+        self.status_text.setText("正在拉取截图缩略图和录屏代表帧供本机审查…")
+        self.thread = QThread(self)
+        self.worker = MediaReviewWorker(
+            self._finish_bundle_path,
+            recording_remote_path,
+        )
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.succeeded.connect(self._on_media_review_ready)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_media_review_ready(self, result: object) -> None:
+        self._set_busy(False)
+        review = dict(result)
+        self._finish_review = review
+        dialog = MediaReviewDialog(review, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            with suppress(Exception):
+                cleanup_media_review(str(review["reviewRoot"]))
+            self._finish_review = None
+            self.status_badge.setText("尚未完成")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText("已取消生成；pending-session 和原始输入均保留。")
+            return
+        choices = dialog.choices()
+        self._run_after_current_thread(lambda: self._start_finalize(review, choices))
+
+    def _start_finalize(
+        self,
+        review: dict[str, object],
+        choices: dict[str, object],
+    ) -> None:
+        self._set_busy(True)
+        self.progress.setValue(82)
+        self.status_badge.setText("生成中")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText("正在创建并验证 schema3 证据包…")
+        self.thread = QThread(self)
+        self.worker = FinalizeWorker(review, choices)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.succeeded.connect(self._on_finalize_success)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_finalize_success(self, result: object) -> None:
+        self._set_busy(False)
+        final = dict(result)
+        if self._finish_review:
+            with suppress(Exception):
+                cleanup_media_review(str(self._finish_review["reviewRoot"]))
+        self._finish_review = None
+        self.bundle_path = str(final["packagePath"])
+        self._finish_bundle_path = ""
+        self._capture_bundle_path = ""
+        self._capture_completed = True
+        self.progress.setValue(100)
+        self.status_badge.setText("证据包完成")
+        self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+        self.status_text.setText("证据包已生成并通过本地验证，可直接交给 Agent2。")
+        self.detail_label.setText(
+            f"证据包：{final.get('packagePath')}\n"
+            f"截图：{final.get('screenshotCount')} 张\n"
+            f"录屏：{final.get('recordingStatus')}\n"
+            f"源包 SHA-256：{final.get('sourceSha256')}\n\n"
+            "原始 APK/XAPK、图标和 intake 记录均保留；"
+            "程序只清除了已完成的 pending-session。"
+        )
+        self.capture_button.setVisible(False)
+        self.finish_button.setText("完成已有取证")
+        self.finish_button.setEnabled(True)
+        self.open_button.setVisible(True)
+        self.copy_button.setVisible(True)
 
     @Slot(str, str)
     def _on_failure(self, message: str, detail: str) -> None:
@@ -954,6 +1446,7 @@ class MainWindow(QMainWindow):
         self.capture_button.setEnabled(
             not busy and bool(self._capture_bundle_path) and not self._capture_completed
         )
+        self.finish_button.setEnabled(not busy)
 
     def _reset_capture_state(self) -> None:
         self._capture_bundle_path = ""
@@ -971,6 +1464,16 @@ class MainWindow(QMainWindow):
         self.thread = None
         self._active_device_serial = None
         self._active_device_display = ""
+        deferred = self._deferred_action
+        self._deferred_action = None
+        if callable(deferred):
+            QTimer.singleShot(0, deferred)
+
+    def _run_after_current_thread(self, callback: object) -> None:
+        if self.thread and self.thread.isRunning():
+            self._deferred_action = callback
+        elif callable(callback):
+            QTimer.singleShot(0, callback)
 
     def _open_bundle(self) -> None:
         if self.bundle_path:
@@ -1049,7 +1552,9 @@ class MainWindow(QMainWindow):
     def _copy_handoff_message(self) -> None:
         if not self.bundle_path:
             return
-        if self._capture_completed:
+        if self.bundle_path and (Path(self.bundle_path) / "observations.json").is_file():
+            message = f"取证包已由 APKBA Analyzer 生成并验证。\n证据包：{self.bundle_path}"
+        elif self._capture_completed:
             message = (
                 "好了，已记录截图/录屏结束边界"
                 f"（截图 {self._capture_screenshot_count} 张，"

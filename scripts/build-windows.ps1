@@ -52,6 +52,7 @@ $Python = Join-Path $Venv 'Scripts\python.exe'
     --paths (Join-Path $Root 'src') `
     --collect-data androguard `
     --hidden-import androguard.core.apk `
+    --add-data "$(Join-Path $Root 'src\apkba_analyzer\assets');assets" `
     --add-binary "$Adb;platform-tools" `
     --add-binary "$AdbWinApi;platform-tools" `
     --add-binary "$AdbWinUsbApi;platform-tools" `

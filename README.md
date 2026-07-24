@@ -1,6 +1,6 @@
 # APKBA Analyzer
 
-给非技术编辑使用的 APK/XAPK/APKM intake 与取证准备工具。拖入安装包和应用图标后，它可以只完成静态检查，也可以连接一台明确选择的 Android 手机，自动执行 Agent1 在“好了”之前的安装、启动和媒体基线步骤。
+给非技术编辑使用的 APK/XAPK/APKM intake 与端到端取证工具。拖入安装包和应用图标后，它可以只完成静态检查，也可以连接一台明确选择的 Android 手机，完成安装、启动、媒体基线、人工媒体确认和 schema3 证据包生成。正常流程不再依赖 Agent1 对话。
 
 ## 第一版会检查什么
 
@@ -23,10 +23,12 @@ Windows 双击 `dist\APKBA-Analyzer.exe` 单文件发布版，macOS 打开 `APKB
 3. 选择输出位置，连接手机并开启“开发者选项 → USB 调试”，在手机弹窗中授权电脑。
 4. 只需要静态交接包时，点击“扫描并生成交接包”。
 5. 需要完成取证准备时，从“取证手机”中明确选择设备，再点击“连接手机取证”。如果旧 APK 的 `targetSdk` 低于手机系统允许的最低值，工具会在安装前显示风险提示；只有人工点击“兼容安装”才会使用 Android 官方的低目标 SDK 测试参数，并把该事实写入交接记录。
-6. 工具安装并启动应用、记录截图/录屏前基线后会停止。编辑在手机上手动截图和录屏，完成后点击“截图/录屏完成 · 记录边界”。工具会把本次取证的结束时间和边界内媒体数量写入交接包；记录成功后可以直接开始下一份 APK。
-7. 把整个文件夹交给 Agent1 并回复“好了”。Agent1 只会选择前基线之后、结束边界之前的媒体；如果截图或录屏黑屏/被禁止，需要在“好了”后明确说明。
+6. 工具安装并启动应用、记录截图/录屏前基线后会停止。编辑在手机上手动截图和录屏，完成后点击“截图/录屏完成 · 记录边界”。
+7. 程序自动读取前基线之后、结束边界之前的媒体，并打开本地审查窗口。逐张勾选本次截图，检查录屏代表帧或完整回放，并确认“可见”“黑屏/禁止录屏”或“部分受保护”。
+8. 点击“生成证据包”。程序会拉取确认媒体、复制原始安装包和图标、写入 schema3 `observations.json`，验证哈希、图片、MP4 和目录残留。验证通过的证据目录可直接交给 Agent2。
+9. EXE 重启后可点击“完成已有取证”，选择含 `.apkba-pending-session.json` 的交接文件夹继续，不需要重新安装。
 
-交接目录保持扁平：一个原始 APK/XAPK/APKM、一个 `icon.*`、`scan_report.json`、`agent1_handoff.json`、浏览器可打开的 `scan_summary.html` 和说明文件。取证准备模式还会生成与 Agent1 兼容的 `.apkba-pending-session.json`；Agent1 从人工截图/录屏完成后的验证阶段继续。
+交接目录保持扁平：一个原始 APK/XAPK/APKM、一个 `icon.*`、`scan_report.json`、`agent1_handoff.json`、浏览器可打开的 `scan_summary.html` 和说明文件。取证准备模式会生成 `.apkba-pending-session.json`；成功完成后，证据包位于交接目录下的 `<日期>/<应用名>_<包名>_<日期>/`，包含 `observations.json`、版本说明、源安装包、截图和原始 MP4。原始 intake 输入继续保留。
 
 ## 本地开发（Windows）
 
@@ -62,6 +64,20 @@ python -m venv .venv
 
 ```powershell
   --allow-low-target-sdk-bypass
+```
+
+命令行完成取证时，先冻结边界并查看候选媒体，再传入人工确认的远程路径：
+
+```powershell
+.\.venv\Scripts\python.exe main.py finish-preflight `
+  --bundle "E:\path\Example_Agent1_Intake"
+
+.\.venv\Scripts\python.exe main.py finish `
+  --bundle "E:\path\Example_Agent1_Intake" `
+  --screenshot "/sdcard/DCIM/Screenshots/Screenshot_Example.png" `
+  --recording "/sdcard/DCIM/Screen recordings/Example.mp4" `
+  --visibility visible `
+  --review-method operator_confirmed_playback
 ```
 
 运行测试：

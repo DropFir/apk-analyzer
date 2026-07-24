@@ -329,17 +329,20 @@ def _verify_signature_with_apksigner(path: Path, tool: Path) -> dict[str, Any]:
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
     digests = sorted(
         {
-            match.upper()
+            match.replace(":", "").upper()
             for match in re.findall(
-                r"^\s*Signer #\d+ certificate SHA-256 digest:\s*([0-9a-f:]{64,95})\s*$",
+                (
+                    r"^\s*Signer(?:\s+#\d+|\s+\([^)\r\n]+\))"
+                    r"\s+certificate SHA-256 digest:\s*([0-9a-f:]{64,95})\s*$"
+                ),
                 output,
                 re.IGNORECASE | re.MULTILINE,
             )
+            if re.fullmatch(r"[0-9A-F]{64}", match.replace(":", "").upper())
         }
     )
-    normalized = [value.replace(":", "") for value in digests]
-    verified = result.returncode == 0 and bool(normalized)
-    if result.returncode == 0 and not normalized:
+    verified = result.returncode == 0 and bool(digests)
+    if result.returncode == 0 and not digests:
         status = "certificate_missing"
         error = "apksigner 验证通过，但输出中没有当前签名者证书 SHA-256。"
     elif result.returncode == 0:
@@ -351,7 +354,7 @@ def _verify_signature_with_apksigner(path: Path, tool: Path) -> dict[str, Any]:
     return {
         "status": status,
         "verified": verified,
-        "certificateSha256": normalized,
+        "certificateSha256": digests,
         "tool": "apksigner",
         "error": error,
     }
@@ -471,14 +474,10 @@ def _verify_split_signatures(
         )
 
     digest_sets = {
-        tuple(row["certificateSha256"])
-        for row in signature_rows
-        if row["certificateSha256"]
+        tuple(row["certificateSha256"]) for row in signature_rows if row["certificateSha256"]
     }
     all_verified = bool(signature_rows) and all(row["verified"] for row in signature_rows)
-    missing_certificate = any(
-        row["status"] == "certificate_missing" for row in signature_rows
-    )
+    missing_certificate = any(row["status"] == "certificate_missing" for row in signature_rows)
     if len(digest_sets) > 1:
         findings.append(
             Finding(
@@ -504,9 +503,7 @@ def _verify_split_signatures(
             )
         )
     return {
-        "status": "verified"
-        if all_verified and len(digest_sets) <= 1
-        else "not_fully_verified",
+        "status": "verified" if all_verified and len(digest_sets) <= 1 else "not_fully_verified",
         "verified": all_verified and len(digest_sets) <= 1,
         "certificateSha256": list(next(iter(digest_sets), ())),
         "tool": "apksigner" if apksigner else "androguard",

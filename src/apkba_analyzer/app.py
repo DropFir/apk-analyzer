@@ -746,15 +746,8 @@ class MainWindow(QMainWindow):
         self.input_section = QFrame()
         self.input_section.setObjectName("sectionPanel")
         input_column = QVBoxLayout(self.input_section)
-        input_column.setContentsMargins(18, 16, 18, 18)
-        input_column.setSpacing(12)
-        input_title = QLabel("1 · 准备文件")
-        input_title.setObjectName("sectionTitle")
-        input_hint = QLabel("拖入安装包和对应图标，或使用下方按钮选择。")
-        input_hint.setObjectName("sectionHint")
-        input_hint.setWordWrap(True)
-        input_column.addWidget(input_title)
-        input_column.addWidget(input_hint)
+        input_column.setContentsMargins(18, 18, 18, 18)
+        input_column.setSpacing(10)
 
         cards = QGridLayout()
         cards.setHorizontalSpacing(12)
@@ -784,15 +777,8 @@ class MainWindow(QMainWindow):
         self.workflow_section = QFrame()
         self.workflow_section.setObjectName("sectionPanel")
         workflow_column = QVBoxLayout(self.workflow_section)
-        workflow_column.setContentsMargins(18, 16, 18, 18)
-        workflow_column.setSpacing(12)
-        workflow_title = QLabel("2 · 连接、取证与完成")
-        workflow_title.setObjectName("sectionTitle")
-        workflow_hint = QLabel("选择交接包输出位置与当前窗口使用的手机。")
-        workflow_hint.setObjectName("sectionHint")
-        workflow_hint.setWordWrap(True)
-        workflow_column.addWidget(workflow_title)
-        workflow_column.addWidget(workflow_hint)
+        workflow_column.setContentsMargins(18, 18, 18, 18)
+        workflow_column.setSpacing(10)
 
         configuration_column = QVBoxLayout()
         configuration_column.setSpacing(10)
@@ -922,8 +908,6 @@ class MainWindow(QMainWindow):
             QLabel#dropFileName { color: #42536b; font-size: 14px; font-weight: 700; }
             QLabel#dropFileName[selected="true"] { color: #075f4e; font-size: 15px; }
             QLabel#pathLabel { font-size: 12px; }
-            QLabel#sectionTitle { font-size: 19px; font-weight: 750; color: #17233b; }
-            QLabel#sectionHint { color: #64748b; }
             QFrame#sectionPanel {
                 background: white; border: 1px solid #dfe6ef; border-radius: 16px;
             }

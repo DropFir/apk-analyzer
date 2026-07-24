@@ -29,6 +29,11 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--icon", required=True, type=Path)
     prepare.add_argument("--output", required=True, type=Path)
     prepare.add_argument("--serial", required=True)
+    prepare.add_argument(
+        "--allow-low-target-sdk-bypass",
+        action="store_true",
+        help="explicitly allow ADB's low-target-SDK compatibility install on the test device",
+    )
     subparsers.add_parser("devices", help="list USB-debugging devices without changing them")
     subparsers.add_parser("gui", help="open the desktop application")
     return parser
@@ -63,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.icon,
                 args.output,
                 args.serial,
+                confirm_low_target_sdk=(
+                    (lambda _details: True) if args.allow_low_target_sdk_bypass else None
+                ),
             )
             print(
                 json.dumps(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -194,6 +195,7 @@ class PrepareWorker(QObject):
     progress = Signal(int, str)
     succeeded = Signal(object, object, str)
     failed = Signal(str, str)
+    low_target_sdk_confirmation_required = Signal(object)
 
     def __init__(self, source: str, icon: str, output: str, serial: str):
         super().__init__()
@@ -201,6 +203,19 @@ class PrepareWorker(QObject):
         self.icon = icon
         self.output = output
         self.serial = serial
+        self._low_target_sdk_confirmation = threading.Event()
+        self._allow_low_target_sdk_bypass = False
+
+    def _confirm_low_target_sdk(self, details: dict[str, object]) -> bool:
+        self._allow_low_target_sdk_bypass = False
+        self._low_target_sdk_confirmation.clear()
+        self.low_target_sdk_confirmation_required.emit(details)
+        self._low_target_sdk_confirmation.wait()
+        return self._allow_low_target_sdk_bypass
+
+    def resolve_low_target_sdk_confirmation(self, allow: bool) -> None:
+        self._allow_low_target_sdk_bypass = allow
+        self._low_target_sdk_confirmation.set()
 
     @Slot()
     def run(self) -> None:
@@ -211,6 +226,7 @@ class PrepareWorker(QObject):
                 self.output,
                 self.serial,
                 progress=lambda value, message: self.progress.emit(value, message),
+                confirm_low_target_sdk=self._confirm_low_target_sdk,
             )
             self.succeeded.emit(report, result, str(bundle))
         except Exception as error:
@@ -599,6 +615,9 @@ class MainWindow(QMainWindow):
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._on_progress)
+        self.worker.low_target_sdk_confirmation_required.connect(
+            self._on_low_target_sdk_confirmation_required
+        )
         self.worker.succeeded.connect(self._on_prepare_success)
         self.worker.failed.connect(self._on_failure)
         self.worker.succeeded.connect(self.thread.quit)
@@ -784,6 +803,14 @@ class MainWindow(QMainWindow):
         self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
         self.status_text.setText("安装和启动准备已完成。现在请在手机上手动截图和录屏。")
         certificate = ", ".join(signature.get("certificateSha256") or []) or "未确认"
+        bypass = prepare_result.get("lowTargetSdkBypass") or {}
+        bypass_text = ""
+        if prepare_result.get("lowTargetSdkBypassUsed"):
+            bypass_text = (
+                "\n低目标 SDK 兼容安装：已人工确认"
+                f"（target {bypass.get('target_sdk')}，"
+                f"手机要求至少 {bypass.get('device_minimum_target_sdk')}）"
+            )
         self.detail_label.setText(
             f"应用：{app.get('applicationLabel') or '未确认'}\n"
             f"包名：{app.get('packageName') or '未确认'}\n"
@@ -791,7 +818,8 @@ class MainWindow(QMainWindow):
             f" · {prepare_result.get('deviceSerial') or '序列号未确认'}\n"
             f"启动结果：{prepare_result.get('launchStatus') or '未确认'}\n"
             f"前台页面：{prepare_result.get('focusedActivity') or '未确认'}\n"
-            f"签名证书 SHA-256：{certificate}\n\n"
+            f"签名证书 SHA-256：{certificate}"
+            f"{bypass_text}\n\n"
             "下一步：在手机上手动完成应用 UI 截图和一段录屏。\n"
             "完成后把整个交接文件夹交给 Agent1，并回复“好了”；"
             "如果截图或录屏黑屏/被禁止，请在“好了”后明确写出来。"
@@ -809,6 +837,35 @@ class MainWindow(QMainWindow):
         self.capture_button.setEnabled(True)
         self.open_button.setVisible(True)
         self.copy_button.setVisible(True)
+
+    @Slot(object)
+    def _on_low_target_sdk_confirmation_required(self, details: object) -> None:
+        requirement = dict(details)
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Icon.Warning)
+        message_box.setWindowTitle("低目标 SDK 应用")
+        message_box.setText(
+            f"该 APK 的 targetSdk 是 {requirement.get('target_sdk')}，"
+            f"手机系统要求至少 {requirement.get('device_minimum_target_sdk')}。"
+        )
+        message_box.setInformativeText(
+            "Android 阻止这类旧应用，是因为它可能绕过较新的权限和隐私保护。"
+            "仅应在当前测试手机上进行兼容测试；安装后应用仍可能无法正常运行。"
+        )
+        install_button = message_box.addButton(
+            "兼容安装",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        cancel_button = message_box.addButton(
+            "取消",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        message_box.setDefaultButton(cancel_button)
+        message_box.exec()
+        allow = message_box.clickedButton() is install_button
+        worker = self.worker
+        if isinstance(worker, PrepareWorker):
+            worker.resolve_low_target_sdk_confirmation(allow)
 
     def _start_capture_end(self) -> None:
         if not self._capture_bundle_path or not self._capture_device_serial:

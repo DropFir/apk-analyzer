@@ -62,12 +62,18 @@ def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
             "deviceSerial": "PHONE-A",
             "launchStatus": "success",
             "focusedActivity": "com.example.fixture/.MainActivity",
+            "lowTargetSdkBypassUsed": True,
+            "lowTargetSdkBypass": {
+                "target_sdk": 22,
+                "device_minimum_target_sdk": 24,
+            },
         },
         str(bundle),
     )
 
     assert window.capture_button.isHidden() is False
     assert window._capture_device_serial == "PHONE-A"
+    assert "低目标 SDK 兼容安装：已人工确认" in window.detail_label.text()
 
     window._on_capture_end_success(
         {

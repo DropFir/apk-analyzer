@@ -7,6 +7,8 @@ independent from the sibling `agent1`, `agent2`, and `agent3` repositories.
 
 - Keep the default scan offline. Never upload APKs, XAPKs, icons, reports, or hashes.
 - Treat every APK/XAPK/APKM as untrusted data. Never execute it or load native code from it.
+- Never silently bypass Android's low-target-SDK install block. Require explicit operator
+  confirmation, use only ADB's documented compatibility flag, and record the bypass fact.
 - Do not modify source packages or icons. Copy them only when creating an intake bundle.
 - Inspect ZIP members before extraction. Reject traversal paths, duplicate names, encrypted
   entries, excessive expansion, and invalid split files.

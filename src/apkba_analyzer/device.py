@@ -29,6 +29,7 @@ PENDING_FILE_NAME = ".apkba-pending-session.json"
 
 RunProcess = Callable[..., subprocess.CompletedProcess[str]]
 Progress = Callable[[int, str], None]
+LowTargetSdkConfirmation = Callable[[dict[str, Any]], bool]
 
 
 def _bundled_root() -> Path | None:
@@ -474,6 +475,35 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     temporary_path.replace(path)
 
 
+def low_target_sdk_install_requirement(
+    report: dict[str, Any],
+    device: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return the platform low-target install block that requires explicit consent."""
+
+    app = report.get("app") or {}
+    try:
+        target_sdk = int(app["targetSdk"])
+        device_sdk = int(device["sdk"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if device_sdk >= 35:
+        minimum_target_sdk = 24
+    elif device_sdk == 34:
+        minimum_target_sdk = 23
+    else:
+        return None
+    if target_sdk >= minimum_target_sdk:
+        return None
+    return {
+        "package_name": str(app.get("packageName") or ""),
+        "target_sdk": target_sdk,
+        "device_sdk": device_sdk,
+        "device_minimum_target_sdk": minimum_target_sdk,
+        "reason": "android_low_target_sdk_install_block",
+    }
+
+
 def record_media_capture_end(
     bundle: Path,
     serial: str,
@@ -559,6 +589,8 @@ def prepare_bundle(
     *,
     adb: AdbClient | None = None,
     progress: Progress | None = None,
+    device: dict[str, Any] | None = None,
+    low_target_sdk_bypass: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Install, launch, record a baseline, and write Agent1's pending marker."""
 
@@ -578,7 +610,7 @@ def prepare_bundle(
     setup: dict[str, Any] = {}
     _progress(progress, 70, "确认手机状态与兼容性…")
     started = _iso_now()
-    device = client.device_facts(serial)
+    device = device or client.device_facts(serial)
     installed = client.invoke(
         ["shell", "pm", "path", package_name],
         serial=serial,
@@ -596,14 +628,29 @@ def prepare_bundle(
 
     _progress(progress, 78, "安装到已选择的手机…")
     install_started = _iso_now()
+    bypass_low_target_sdk = low_target_sdk_bypass is not None
     with tempfile.TemporaryDirectory(prefix="apkba-prepare-") as temporary:
         if handoff["source"]["format"] == "apk":
-            install_arguments = ["install", "-r", str(source)]
-            install_method = "adb install -r"
+            install_arguments = ["install"]
+            if bypass_low_target_sdk:
+                install_arguments.append("--bypass-low-target-sdk-block")
+            install_arguments.extend(["-r", str(source)])
+            install_method = (
+                "adb install --bypass-low-target-sdk-block -r"
+                if bypass_low_target_sdk
+                else "adb install -r"
+            )
         else:
             split_paths = _extract_splits(source, selected_splits, Path(temporary))
-            install_arguments = ["install-multiple", "-r", *map(str, split_paths)]
-            install_method = "adb install-multiple -r"
+            install_arguments = ["install-multiple"]
+            if bypass_low_target_sdk:
+                install_arguments.append("--bypass-low-target-sdk-block")
+            install_arguments.extend(["-r", *map(str, split_paths)])
+            install_method = (
+                "adb install-multiple --bypass-low-target-sdk-block -r"
+                if bypass_low_target_sdk
+                else "adb install-multiple -r"
+            )
         install = client.invoke(install_arguments, serial=serial, allow_failure=True, timeout=300)
     install_output = (install.stdout or "") + "\n" + (install.stderr or "")
     if install.returncode or not re.search(r"(?m)^Success\s*$", install_output):
@@ -614,6 +661,7 @@ def prepare_bundle(
         "started_local": install_started,
         "finished_local": _iso_now(),
         "status": "success",
+        "low_target_sdk_bypass_used": bypass_low_target_sdk,
     }
 
     _progress(progress, 86, "启动应用并检查前台页面…")
@@ -743,6 +791,8 @@ def prepare_bundle(
             "method": install_method,
             "was_installed": was_installed,
             "installed_splits": selected_splits,
+            "low_target_sdk_bypass_used": bypass_low_target_sdk,
+            "low_target_sdk_bypass": low_target_sdk_bypass,
         },
         "launch": {
             "result": launch_result,
@@ -788,6 +838,8 @@ def prepare_bundle(
         "deviceModel": device.get("model"),
         "launchStatus": launch_result,
         "focusedActivity": focused,
+        "lowTargetSdkBypassUsed": bypass_low_target_sdk,
+        "lowTargetSdkBypass": low_target_sdk_bypass,
     }
 
 
@@ -799,6 +851,7 @@ def scan_create_and_prepare(
     *,
     adb: AdbClient | None = None,
     progress: Progress | None = None,
+    confirm_low_target_sdk: LowTargetSdkConfirmation | None = None,
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     """Run the editor workflow once: scan, create intake, install, launch, baseline."""
 
@@ -815,7 +868,33 @@ def scan_create_and_prepare(
                 "\n" + "\n".join(f"- {message}" for message in blockers) if blockers else ""
             )
             raise ScanFailure("静态扫描发现阻塞项，未安装到手机。" + blocker_text)
+        client = adb or AdbClient()
+        _progress(progress, 63, "确认手机系统与目标 SDK 兼容性…")
+        device = client.device_facts(serial)
+        low_target_requirement = low_target_sdk_install_requirement(report, device)
+        low_target_sdk_bypass = None
+        if low_target_requirement is not None:
+            if confirm_low_target_sdk is None or not confirm_low_target_sdk(
+                low_target_requirement
+            ):
+                raise ScanFailure(
+                    "已取消低目标 SDK 兼容安装；安装包未安装到手机。"
+                    f" APK targetSdk={low_target_requirement['target_sdk']}，"
+                    f"手机要求至少 {low_target_requirement['device_minimum_target_sdk']}。"
+                )
+            low_target_sdk_bypass = {
+                **low_target_requirement,
+                "authorization": "explicit_operator_confirmation",
+            }
         _progress(progress, 63, "复制原件并生成 Agent1 交接包…")
         bundle = create_intake_bundle(report, source_path, icon_path, output_root)
-        result = prepare_bundle(report, bundle, serial, adb=adb, progress=progress)
+        result = prepare_bundle(
+            report,
+            bundle,
+            serial,
+            adb=client,
+            progress=progress,
+            device=device,
+            low_target_sdk_bypass=low_target_sdk_bypass,
+        )
         return report, bundle, result

@@ -10,6 +10,7 @@ import pytest
 from apkba_analyzer.device import (
     AdbClient,
     device_session_lock,
+    low_target_sdk_install_requirement,
     prepare_bundle,
     record_media_capture_end,
     scan_create_and_prepare,
@@ -191,9 +192,9 @@ class FakePrepareAdb:
         self.calls.append((serial, arguments))
         if arguments[:3] == ["shell", "pm", "path"]:
             return completed("", 1)
-        if arguments[:2] == ["install", "-r"]:
+        if arguments[0] == "install":
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
-        if arguments[:2] == ["install-multiple", "-r"]:
+        if arguments[0] == "install-multiple":
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
         if arguments[:4] == ["shell", "am", "start", "-n"]:
             return completed("Starting\n" if self.exact_launch_ok else "Error: bad activity\n")
@@ -309,6 +310,113 @@ def test_prepare_writes_agent1_pending_session_without_capturing_media(
     flattened = " ".join(" ".join(arguments) for _serial, arguments in adb.calls)
     assert "screencap" not in flattened
     assert "screenrecord" not in flattened
+
+
+def test_low_target_sdk_requirement_matches_android_15_install_policy() -> None:
+    requirement = low_target_sdk_install_requirement(
+        {"app": {"packageName": "com.example.legacy", "targetSdk": 22}},
+        {"sdk": "35"},
+    )
+
+    assert requirement == {
+        "package_name": "com.example.legacy",
+        "target_sdk": 22,
+        "device_sdk": 35,
+        "device_minimum_target_sdk": 24,
+        "reason": "android_low_target_sdk_install_block",
+    }
+    assert (
+        low_target_sdk_install_requirement(
+            {"app": {"packageName": "com.example.current", "targetSdk": 24}},
+            {"sdk": "35"},
+        )
+        is None
+    )
+
+
+def test_prepare_requires_explicit_low_target_sdk_confirmation_before_creating_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, _bundle = make_bundle(tmp_path)
+    report["status"] = "pass"
+    report["app"]["targetSdk"] = 22
+    adb = FakePrepareAdb()
+    monkeypatch.setattr("apkba_analyzer.device.scan_package", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(
+        "apkba_analyzer.device.create_intake_bundle",
+        lambda *_args, **_kwargs: pytest.fail("bundle must not be created before confirmation"),
+    )
+
+    with pytest.raises(ScanFailure, match="已取消低目标 SDK 兼容安装"):
+        scan_create_and_prepare(
+            tmp_path / "legacy.apk",
+            tmp_path / "legacy.webp",
+            tmp_path,
+            "PHONE-LEGACY",
+            adb=adb,
+        )
+
+    assert not any(arguments[0].startswith("install") for _serial, arguments in adb.calls)
+
+
+def test_prepare_uses_and_records_explicit_low_target_sdk_bypass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["app"]["targetSdk"] = 22
+    adb = FakePrepareAdb()
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+    requirement = low_target_sdk_install_requirement(report, adb.device_facts("PHONE-LEGACY"))
+    assert requirement is not None
+    bypass = {**requirement, "authorization": "explicit_operator_confirmation"}
+
+    result = prepare_bundle(
+        report,
+        bundle,
+        "PHONE-LEGACY",
+        adb=adb,
+        device=adb.device_facts("PHONE-LEGACY"),
+        low_target_sdk_bypass=bypass,
+    )
+
+    install = next(arguments for _serial, arguments in adb.calls if arguments[0] == "install")
+    pending = json.loads((bundle / ".apkba-pending-session.json").read_text(encoding="utf-8"))
+    assert install[:3] == ["install", "--bypass-low-target-sdk-block", "-r"]
+    assert result["lowTargetSdkBypassUsed"] is True
+    assert pending["install"]["low_target_sdk_bypass_used"] is True
+    assert pending["install"]["low_target_sdk_bypass"]["target_sdk"] == 22
+
+
+def test_prepare_workflow_continues_after_explicit_low_target_sdk_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["status"] = "pass"
+    report["app"]["targetSdk"] = 22
+    adb = FakePrepareAdb()
+    confirmations: list[dict] = []
+    monkeypatch.setattr("apkba_analyzer.device.scan_package", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(
+        "apkba_analyzer.device.create_intake_bundle",
+        lambda *_args, **_kwargs: bundle,
+    )
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    _report, prepared_bundle, result = scan_create_and_prepare(
+        tmp_path / "legacy.apk",
+        tmp_path / "legacy.webp",
+        tmp_path,
+        "PHONE-LEGACY",
+        adb=adb,
+        confirm_low_target_sdk=lambda details: confirmations.append(details) or True,
+    )
+
+    install = next(arguments for _serial, arguments in adb.calls if arguments[0] == "install")
+    assert prepared_bundle == bundle
+    assert len(confirmations) == 1
+    assert confirmations[0]["target_sdk"] == 22
+    assert install[:3] == ["install", "--bypass-low-target-sdk-block", "-r"]
+    assert result["lowTargetSdkBypassUsed"] is True
 
 
 def test_record_media_capture_end_adds_a_bounded_snapshot_without_closing_session(

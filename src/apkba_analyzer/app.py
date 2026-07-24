@@ -727,8 +727,8 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
         self.setAcceptDrops(True)
-        self.resize(1080, 760)
-        self.setMinimumSize(880, 640)
+        self.resize(1080, 660)
+        self.setMinimumSize(880, 580)
         self._build_ui()
         self._apply_styles()
 
@@ -834,36 +834,38 @@ class MainWindow(QMainWindow):
         self.result_panel = QFrame()
         self.result_panel.setObjectName("resultPanel")
         result_layout = QVBoxLayout(self.result_panel)
-        result_layout.setContentsMargins(16, 12, 16, 14)
+        result_layout.setContentsMargins(16, 14, 16, 14)
+        result_layout.setSpacing(10)
         result_top = QHBoxLayout()
+        result_top.setSpacing(10)
         self.status_badge = QLabel("等待文件")
         self.status_badge.setObjectName("statusBadge")
         self.status_text = QLabel("请选择安装包和图标。")
         self.status_text.setObjectName("statusText")
+        self.status_text.setWordWrap(True)
         result_top.addWidget(self.status_badge)
         result_top.addWidget(self.status_text, 1)
+        self.open_button = QPushButton("打开交接包")
+        self.open_button.setVisible(False)
+        self.open_button.clicked.connect(self._open_bundle)
+        self.finish_button = QPushButton("完成已有取证")
+        self.finish_button.setObjectName("secondaryAction")
+        self.finish_button.clicked.connect(self._start_finish)
+        result_top.addWidget(self.open_button)
+        result_top.addWidget(self.finish_button)
         result_layout.addLayout(result_top)
         self.detail_label = QLabel("")
         self.detail_label.setObjectName("details")
         self.detail_label.setWordWrap(True)
         self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         result_layout.addWidget(self.detail_label)
-        self.open_button = QPushButton("打开交接包")
-        self.open_button.setVisible(False)
-        self.open_button.clicked.connect(self._open_bundle)
         self.capture_button = QPushButton("截图/录屏完成 · 记录边界")
         self.capture_button.setObjectName("captureButton")
         self.capture_button.setVisible(False)
         self.capture_button.clicked.connect(self._start_capture_end)
         result_layout.addWidget(self.capture_button)
-        result_actions = QHBoxLayout()
-        self.finish_button = QPushButton("完成已有取证")
-        self.finish_button.clicked.connect(self._start_finish)
-        result_actions.addWidget(self.finish_button)
-        result_actions.addWidget(self.open_button)
-        result_actions.addStretch()
-        result_layout.addLayout(result_actions)
-        workflow_column.addWidget(self.result_panel, 1)
+        workflow_column.addWidget(self.result_panel)
+        workflow_column.addStretch()
 
         layout.addWidget(self.input_section)
         layout.addWidget(self.workflow_section, 1)
@@ -914,6 +916,9 @@ class MainWindow(QMainWindow):
             QFrame#panel, QFrame#resultPanel {
                 background: #f8fafc; border: 1px solid #dfe6ef; border-radius: 12px;
             }
+            QFrame#resultPanel {
+                background: #fbfdfc; border-color: #d8e5e1;
+            }
             QLabel#fieldLabel { font-weight: 700; }
             QLineEdit {
                 background: #f8fafc; border: 1px solid #d8e1ec;
@@ -933,6 +938,12 @@ class MainWindow(QMainWindow):
             }
             QPushButton#primaryButton:hover { background: #066653; }
             QPushButton#primaryButton:disabled { background: #93a7a1; }
+            QPushButton#secondaryAction {
+                background: #edf8f4; color: #087763; border-color: #b8ddd2;
+            }
+            QPushButton#secondaryAction:hover {
+                background: #def3ec; border-color: #0d9275;
+            }
             QPushButton#captureButton {
                 background: #087763; color: white; border-color: #087763; font-weight: 750;
             }
@@ -946,7 +957,7 @@ class MainWindow(QMainWindow):
                 background: #e9eef5; color: #41526b; border-radius: 10px;
                 padding: 5px 10px; font-weight: 750;
             }
-            QLabel#statusText { font-weight: 650; }
+            QLabel#statusText { font-size: 14px; font-weight: 650; }
             QLabel#details { color: #58677d; line-height: 1.5; }
             """
         )

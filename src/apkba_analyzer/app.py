@@ -200,6 +200,9 @@ class MainWindow(QMainWindow):
         self.bundle_path = ""
         self.thread: QThread | None = None
         self.worker: QObject | None = None
+        self.copy_reset_timer = QTimer(self)
+        self.copy_reset_timer.setSingleShot(True)
+        self.copy_reset_timer.timeout.connect(self._reset_copy_button)
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
         self.resize(1080, 760)
@@ -327,7 +330,15 @@ class MainWindow(QMainWindow):
         self.open_button = QPushButton("打开交接包")
         self.open_button.setVisible(False)
         self.open_button.clicked.connect(self._open_bundle)
-        result_layout.addWidget(self.open_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.copy_button = QPushButton("复制给 Codex 的文案")
+        self.copy_button.setObjectName("copyButton")
+        self.copy_button.setVisible(False)
+        self.copy_button.clicked.connect(self._copy_handoff_message)
+        result_actions = QHBoxLayout()
+        result_actions.addWidget(self.open_button)
+        result_actions.addWidget(self.copy_button)
+        result_actions.addStretch()
+        result_layout.addLayout(result_actions)
         layout.addWidget(self.result_panel)
         layout.addStretch()
 
@@ -388,6 +399,10 @@ class MainWindow(QMainWindow):
             }
             QPushButton#primaryButton:hover { background: #066653; }
             QPushButton#primaryButton:disabled { background: #93a7a1; }
+            QPushButton#copyButton {
+                background: #e5f7f1; color: #087763; border-color: #8bcfbd;
+            }
+            QPushButton#copyButton:hover { background: #d7f2e9; border-color: #0d9275; }
             QLabel#trust { color: #087763; font-size: 13px; }
             QProgressBar { border: 0; background: #e4eaf2; border-radius: 4px; height: 8px; }
             QProgressBar::chunk { background: #17a88a; border-radius: 4px; }
@@ -451,6 +466,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("output", output)
         self._set_busy(True)
         self.open_button.setVisible(False)
+        self.copy_button.setVisible(False)
         self.bundle_path = ""
         self.progress.setValue(1)
         self.status_badge.setText("扫描中")
@@ -487,6 +503,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("output", output)
         self._set_busy(True)
         self.open_button.setVisible(False)
+        self.copy_button.setVisible(False)
         self.bundle_path = ""
         self.progress.setValue(1)
         self.status_badge.setText("准备中")
@@ -595,6 +612,7 @@ class MainWindow(QMainWindow):
         )
         self.bundle_path = bundle
         self.open_button.setVisible(bool(bundle))
+        self.copy_button.setVisible(bool(bundle))
 
     @Slot(object, object, str)
     def _on_prepare_success(self, report: object, result: object, bundle: str) -> None:
@@ -620,6 +638,7 @@ class MainWindow(QMainWindow):
         )
         self.bundle_path = bundle
         self.open_button.setVisible(True)
+        self.copy_button.setVisible(True)
 
     @Slot(str, str)
     def _on_failure(self, message: str, detail: str) -> None:
@@ -642,6 +661,21 @@ class MainWindow(QMainWindow):
     def _open_bundle(self) -> None:
         if self.bundle_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.bundle_path))
+
+    def _copy_handoff_message(self) -> None:
+        if not self.bundle_path:
+            return
+        message = (
+            "好了。\n"
+            f"交接包路径：{self.bundle_path}\n"
+            "请读取整个交接包，并继续 Agent1 后续流程。"
+        )
+        QApplication.clipboard().setText(message)
+        self.copy_button.setText("✓ 已复制到剪贴板")
+        self.copy_reset_timer.start(2200)
+
+    def _reset_copy_button(self) -> None:
+        self.copy_button.setText("复制给 Codex 的文案")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self.thread and self.thread.isRunning():

@@ -38,9 +38,12 @@ def test_main_window_uses_landscape_layout(
 ) -> None:
     monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
     window = MainWindow()
+    window.show()
+    qt_app.processEvents()
 
     assert window.width() > window.height()
     assert window.minimumWidth() > window.minimumHeight()
+    assert window.input_section.geometry().bottom() < window.workflow_section.geometry().top()
     assert not hasattr(window, "scan_button")
     assert not hasattr(window, "copy_button")
     window.close()

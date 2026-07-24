@@ -727,8 +727,8 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
         self.setAcceptDrops(True)
-        self.resize(1080, 640)
-        self.setMinimumSize(880, 540)
+        self.resize(1080, 760)
+        self.setMinimumSize(880, 640)
         self._build_ui()
         self._apply_styles()
 
@@ -739,11 +739,14 @@ class MainWindow(QMainWindow):
         root = QWidget()
         scroll.setWidget(root)
         self.setCentralWidget(scroll)
-        layout = QHBoxLayout(root)
+        layout = QVBoxLayout(root)
         layout.setContentsMargins(24, 18, 24, 22)
-        layout.setSpacing(18)
+        layout.setSpacing(14)
 
-        input_column = QVBoxLayout()
+        self.input_section = QFrame()
+        self.input_section.setObjectName("sectionPanel")
+        input_column = QVBoxLayout(self.input_section)
+        input_column.setContentsMargins(18, 16, 18, 18)
         input_column.setSpacing(12)
         input_title = QLabel("1 · 准备文件")
         input_title.setObjectName("sectionTitle")
@@ -777,9 +780,11 @@ class MainWindow(QMainWindow):
         cards.setColumnStretch(0, 1)
         cards.setColumnStretch(1, 1)
         input_column.addLayout(cards)
-        input_column.addStretch()
 
-        workflow_column = QVBoxLayout()
+        self.workflow_section = QFrame()
+        self.workflow_section.setObjectName("sectionPanel")
+        workflow_column = QVBoxLayout(self.workflow_section)
+        workflow_column.setContentsMargins(18, 16, 18, 18)
         workflow_column.setSpacing(12)
         workflow_title = QLabel("2 · 连接、取证与完成")
         workflow_title.setObjectName("sectionTitle")
@@ -789,6 +794,8 @@ class MainWindow(QMainWindow):
         workflow_column.addWidget(workflow_title)
         workflow_column.addWidget(workflow_hint)
 
+        configuration_row = QHBoxLayout()
+        configuration_row.setSpacing(12)
         output_frame = QFrame()
         output_frame.setObjectName("panel")
         output_layout = QHBoxLayout(output_frame)
@@ -802,7 +809,7 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(output_label)
         output_layout.addWidget(self.output_edit, 1)
         output_layout.addWidget(choose_output)
-        workflow_column.addWidget(output_frame)
+        configuration_row.addWidget(output_frame, 1)
 
         device_frame = QFrame()
         device_frame.setObjectName("panel")
@@ -820,7 +827,8 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo, 1)
         device_layout.addWidget(self.refresh_button)
-        workflow_column.addWidget(device_frame)
+        configuration_row.addWidget(device_frame, 1)
+        workflow_column.addLayout(configuration_row)
 
         action_row = QHBoxLayout()
         self.prepare_button = QPushButton("连接手机取证")
@@ -871,8 +879,8 @@ class MainWindow(QMainWindow):
         result_layout.addLayout(result_actions)
         workflow_column.addWidget(self.result_panel, 1)
 
-        layout.addLayout(input_column, 5)
-        layout.addLayout(workflow_column, 6)
+        layout.addWidget(self.input_section)
+        layout.addWidget(self.workflow_section, 1)
 
         self.source_card.path_changed.connect(self._set_source)
         self.icon_card.path_changed.connect(self._set_icon)
@@ -916,8 +924,11 @@ class MainWindow(QMainWindow):
             QLabel#pathLabel { font-size: 12px; }
             QLabel#sectionTitle { font-size: 19px; font-weight: 750; color: #17233b; }
             QLabel#sectionHint { color: #64748b; }
+            QFrame#sectionPanel {
+                background: white; border: 1px solid #dfe6ef; border-radius: 16px;
+            }
             QFrame#panel, QFrame#resultPanel {
-                background: white; border: 1px solid #dfe6ef; border-radius: 12px;
+                background: #f8fafc; border: 1px solid #dfe6ef; border-radius: 12px;
             }
             QLabel#fieldLabel { font-weight: 700; }
             QLineEdit {

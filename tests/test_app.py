@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QThread, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QWheelEvent
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap, QWheelEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from apkba_analyzer.app import DropCard, MainWindow
+from apkba_analyzer.app import DropCard, MainWindow, MediaReviewDialog
 
 
 @pytest.fixture
@@ -30,6 +31,56 @@ def test_drop_card_makes_selected_file_obvious(qt_app: QApplication, tmp_path: P
     assert card.file_name_label.text() == source.name
     assert card.path_label.text() == str(source.resolve())
     assert selected == [str(source.resolve())]
+
+
+def test_main_window_uses_landscape_layout(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    window = MainWindow()
+
+    assert window.width() > window.height()
+    assert window.minimumWidth() > window.minimumHeight()
+    window.close()
+
+
+def test_media_review_is_landscape_and_previews_are_clickable(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    screenshot = tmp_path / "screenshot.png"
+    frame = tmp_path / "frame.png"
+    for path, color in ((screenshot, "#087763"), (frame, "#17233b")):
+        pixmap = QPixmap(360, 720)
+        pixmap.fill(QColor(color))
+        assert pixmap.save(str(path))
+    review = {
+        "applicationLabel": "Fixture",
+        "packageName": "com.example.fixture",
+        "screenshots": [
+            {
+                "remote_path": "/sdcard/DCIM/Screenshots/Fixture.png",
+                "file_name": "Fixture.png",
+                "localPath": str(screenshot),
+            }
+        ],
+        "suggestedScreenshotPaths": ["/sdcard/DCIM/Screenshots/Fixture.png"],
+        "selectedRecording": {"file_name": "Fixture.mp4"},
+        "localRecordingPath": str(tmp_path / "Fixture.mp4"),
+        "recordingFrames": [str(frame)],
+        "visibilitySuggestion": "visible",
+    }
+    dialog = MediaReviewDialog(review, str(tmp_path))
+
+    assert dialog.width() > dialog.height()
+    assert len(dialog.media_previews) == 2
+    preview = dialog.media_previews[0]
+    clicked: list[str] = []
+    preview.clicked.disconnect()
+    preview.clicked.connect(clicked.append)
+    QTest.mouseClick(preview, Qt.MouseButton.LeftButton)
+
+    assert clicked == [str(screenshot)]
+    dialog.close()
 
 
 def test_copy_handoff_message_puts_ready_text_on_clipboard(

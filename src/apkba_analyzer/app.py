@@ -8,13 +8,25 @@ import traceback
 from contextlib import suppress
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QSettings,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QDesktopServices,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDropEvent,
+    QMouseEvent,
     QPixmap,
     QWheelEvent,
 )
@@ -161,6 +173,131 @@ class DeviceComboBox(QComboBox):
             super().wheelEvent(event)
             return
         event.ignore()
+
+
+class ClickableImageLabel(QLabel):
+    """Small media preview that opens its original image when clicked."""
+
+    clicked = Signal(str)
+
+    def __init__(
+        self,
+        image_path: str,
+        preview_size: QSize,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.setFixedSize(preview_size)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("点击查看大图")
+        self.setStyleSheet(
+            "background:#101722;border:1px solid #cbd6e5;border-radius:8px"
+        )
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            self.setText("无法预览")
+            self.setStyleSheet(
+                "background:#eef2f7;color:#64748b;"
+                "border:1px solid #cbd6e5;border-radius:8px"
+            )
+        else:
+            self.setPixmap(
+                pixmap.scaled(
+                    preview_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.image_path:
+            self.clicked.emit(self.image_path)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class ImagePreviewDialog(QDialog):
+    """Zoomable local image viewer for screenshots and recording frames."""
+
+    def __init__(self, image_path: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.original = QPixmap(image_path)
+        self.zoom_factor = 1.0
+        self.setWindowTitle(f"查看大图 · {Path(image_path).name}")
+        self.resize(980, 760)
+        self.setMinimumSize(680, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        controls = QHBoxLayout()
+        name = QLabel(Path(image_path).name)
+        name.setStyleSheet("font-size:15px;font-weight:700")
+        controls.addWidget(name, 1)
+        fit_button = QPushButton("适合窗口")
+        actual_button = QPushButton("100%")
+        zoom_out_button = QPushButton("缩小")
+        zoom_in_button = QPushButton("放大")
+        close_button = QPushButton("关闭")
+        fit_button.clicked.connect(self._fit_to_window)
+        actual_button.clicked.connect(lambda: self._set_zoom(1.0))
+        zoom_out_button.clicked.connect(lambda: self._set_zoom(self.zoom_factor / 1.25))
+        zoom_in_button.clicked.connect(lambda: self._set_zoom(self.zoom_factor * 1.25))
+        close_button.clicked.connect(self.accept)
+        for button in (
+            fit_button,
+            actual_button,
+            zoom_out_button,
+            zoom_in_button,
+            close_button,
+        ):
+            controls.addWidget(button)
+        layout.addLayout(controls)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("background:#111827")
+        self.scroll.setWidget(self.image_label)
+        layout.addWidget(self.scroll, 1)
+
+        if self.original.isNull():
+            self.image_label.setText("无法读取该图片。")
+            self.image_label.resize(480, 320)
+        else:
+            self._set_zoom(1.0)
+            QTimer.singleShot(0, self._fit_to_window)
+
+    def _set_zoom(self, factor: float) -> None:
+        if self.original.isNull():
+            return
+        self.zoom_factor = max(0.1, min(factor, 5.0))
+        target = self.original.size() * self.zoom_factor
+        pixmap = self.original.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(pixmap)
+        self.image_label.resize(pixmap.size())
+
+    def _fit_to_window(self) -> None:
+        if self.original.isNull():
+            return
+        available = self.scroll.viewport().size() - QSize(20, 20)
+        if available.width() <= 0 or available.height() <= 0:
+            return
+        factor = min(
+            available.width() / self.original.width(),
+            available.height() / self.original.height(),
+            1.0,
+        )
+        self._set_zoom(factor)
 
 
 class ScanWorker(QObject):
@@ -348,9 +485,10 @@ class MediaReviewDialog(QDialog):
         super().__init__(parent)
         self.review = review
         self.screenshot_checks: dict[str, QCheckBox] = {}
+        self.media_previews: list[ClickableImageLabel] = []
         self.setWindowTitle("确认本次截图与录屏")
-        self.resize(900, 760)
-        self.setMinimumSize(720, 580)
+        self.resize(1180, 720)
+        self.setMinimumSize(940, 600)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
@@ -369,45 +507,49 @@ class MediaReviewDialog(QDialog):
         layout.addWidget(title)
         layout.addWidget(help_text)
 
+        media_layout = QHBoxLayout()
+        media_layout.setSpacing(14)
+
         screenshot_group = QGroupBox("截图（逐张确认）")
         screenshot_layout = QVBoxLayout(screenshot_group)
+        screenshot_hint = QLabel("点击任意缩略图可查看大图；只勾选属于本次应用的截图。")
+        screenshot_hint.setStyleSheet("color:#58677d")
+        screenshot_hint.setWordWrap(True)
+        screenshot_layout.addWidget(screenshot_hint)
         screenshot_scroll = QScrollArea()
         screenshot_scroll.setWidgetResizable(True)
+        screenshot_scroll.setMinimumHeight(360)
         screenshot_content = QWidget()
         screenshot_rows = QGridLayout(screenshot_content)
         screenshot_rows.setHorizontalSpacing(14)
-        screenshot_rows.setVerticalSpacing(12)
+        screenshot_rows.setVerticalSpacing(16)
         screenshots = list(review.get("screenshots") or [])
         suggested = set(review.get("suggestedScreenshotPaths") or [])
         default_all = not suggested
-        for row_index, record in enumerate(screenshots):
+        for index, record in enumerate(screenshots):
             remote_path = str(record.get("remote_path") or "")
             check = QCheckBox(str(record.get("file_name") or Path(remote_path).name))
             check.setChecked(default_all or remote_path in suggested)
             check.setToolTip(remote_path)
             self.screenshot_checks[remote_path] = check
-            preview = QLabel()
-            preview.setFixedSize(96, 170)
-            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            preview.setStyleSheet("background:#eef2f7;border:1px solid #d8e1ec")
-            pixmap = QPixmap(str(record.get("localPath") or ""))
-            if not pixmap.isNull():
-                preview.setPixmap(
-                    pixmap.scaled(
-                        preview.size(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                )
-            screenshot_rows.addWidget(preview, row_index, 0)
-            screenshot_rows.addWidget(check, row_index, 1)
+            card = QWidget()
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(4, 4, 4, 4)
+            card_layout.setSpacing(7)
+            local_path = str(record.get("localPath") or "")
+            preview = ClickableImageLabel(local_path, QSize(138, 230))
+            preview.clicked.connect(self._open_image_preview)
+            self.media_previews.append(preview)
+            card_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignCenter)
+            card_layout.addWidget(check)
+            row_index, column_index = divmod(index, 3)
+            screenshot_rows.addWidget(card, row_index, column_index)
         if not screenshots:
-            screenshot_rows.addWidget(QLabel("本次边界内没有发现设备截图。"), 0, 0, 1, 2)
-        screenshot_rows.setColumnStretch(1, 1)
+            screenshot_rows.addWidget(QLabel("本次边界内没有发现设备截图。"), 0, 0, 1, 3)
+        for column_index in range(3):
+            screenshot_rows.setColumnStretch(column_index, 1)
         screenshot_scroll.setWidget(screenshot_content)
-        screenshot_scroll.setMaximumHeight(250)
         screenshot_layout.addWidget(screenshot_scroll)
-        layout.addWidget(screenshot_group)
 
         restriction_row = QHBoxLayout()
         restriction_label = QLabel("截图被禁止时的本地说明图")
@@ -418,7 +560,8 @@ class MediaReviewDialog(QDialog):
         restriction_row.addWidget(restriction_label)
         restriction_row.addWidget(self.restriction_edit, 1)
         restriction_row.addWidget(restriction_button)
-        layout.addLayout(restriction_row)
+        screenshot_layout.addLayout(restriction_row)
+        media_layout.addWidget(screenshot_group, 3)
 
         recording_group = QGroupBox("录屏内容审查")
         recording_layout = QVBoxLayout(recording_group)
@@ -427,31 +570,34 @@ class MediaReviewDialog(QDialog):
         )
         recording_name.setStyleSheet("font-weight:700")
         recording_layout.addWidget(recording_name)
-        frame_row = QHBoxLayout()
+        recording_hint = QLabel("点击代表帧可查看大图；需要时可打开完整录屏核对。")
+        recording_hint.setStyleSheet("color:#58677d")
+        recording_hint.setWordWrap(True)
+        recording_layout.addWidget(recording_hint)
+        frame_scroll = QScrollArea()
+        frame_scroll.setWidgetResizable(True)
+        frame_scroll.setMinimumHeight(330)
+        frame_content = QWidget()
+        frame_grid = QGridLayout(frame_content)
+        frame_grid.setHorizontalSpacing(10)
+        frame_grid.setVerticalSpacing(12)
         frames = list(review.get("recordingFrames") or [])
-        for frame_path in frames:
-            preview = QLabel()
-            preview.setFixedSize(130, 210)
-            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            preview.setStyleSheet("background:#111;border:1px solid #d8e1ec")
-            pixmap = QPixmap(str(frame_path))
-            if not pixmap.isNull():
-                preview.setPixmap(
-                    pixmap.scaled(
-                        preview.size(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                )
-            frame_row.addWidget(preview)
+        for index, frame_path in enumerate(frames):
+            preview = ClickableImageLabel(str(frame_path), QSize(145, 245))
+            preview.clicked.connect(self._open_image_preview)
+            self.media_previews.append(preview)
+            row_index, column_index = divmod(index, 2)
+            frame_grid.addWidget(preview, row_index, column_index)
         if not frames:
             missing_frames = QLabel(
                 "未能生成代表帧，请点击“打开完整录屏”并在播放器中确认。"
             )
             missing_frames.setWordWrap(True)
-            frame_row.addWidget(missing_frames)
-        frame_row.addStretch()
-        recording_layout.addLayout(frame_row)
+            frame_grid.addWidget(missing_frames, 0, 0, 1, 2)
+        frame_grid.setColumnStretch(0, 1)
+        frame_grid.setColumnStretch(1, 1)
+        frame_scroll.setWidget(frame_content)
+        recording_layout.addWidget(frame_scroll, 1)
         recording_controls = QHBoxLayout()
         open_recording = QPushButton("打开完整录屏")
         open_recording.clicked.connect(self._open_recording)
@@ -480,7 +626,8 @@ class MediaReviewDialog(QDialog):
         self.suggestion_label = QLabel(suggestion_text)
         self.suggestion_label.setStyleSheet("color:#7d5800")
         recording_layout.addWidget(self.suggestion_label)
-        layout.addWidget(recording_group)
+        media_layout.addWidget(recording_group, 2)
+        layout.addLayout(media_layout, 1)
 
         output_row = QHBoxLayout()
         output_row.addWidget(QLabel("最终证据包位置"))
@@ -518,6 +665,10 @@ class MediaReviewDialog(QDialog):
         path = str(self.review.get("localRecordingPath") or "")
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    @Slot(str)
+    def _open_image_preview(self, image_path: str) -> None:
+        ImagePreviewDialog(image_path, self).exec()
 
     def _choose_output_root(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -611,8 +762,8 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("APKBA", "APKBA Analyzer")
         self.setWindowTitle("APKBA Analyzer")
         self.setAcceptDrops(True)
-        self.resize(500, 720)
-        self.setMinimumSize(420, 560)
+        self.resize(1080, 640)
+        self.setMinimumSize(880, 540)
         self._build_ui()
         self._apply_styles()
 
@@ -623,16 +774,26 @@ class MainWindow(QMainWindow):
         root = QWidget()
         scroll.setWidget(root)
         self.setCentralWidget(scroll)
-        layout = QVBoxLayout(root)
+        layout = QHBoxLayout(root)
         layout.setContentsMargins(24, 18, 24, 22)
-        layout.setSpacing(12)
+        layout.setSpacing(18)
+
+        input_column = QVBoxLayout()
+        input_column.setSpacing(12)
+        input_title = QLabel("1 · 准备文件")
+        input_title.setObjectName("sectionTitle")
+        input_hint = QLabel("拖入安装包和对应图标，或使用下方按钮选择。")
+        input_hint.setObjectName("sectionHint")
+        input_hint.setWordWrap(True)
+        input_column.addWidget(input_title)
+        input_column.addWidget(input_hint)
 
         cards = QGridLayout()
-        cards.setHorizontalSpacing(0)
-        cards.setVerticalSpacing(8)
+        cards.setHorizontalSpacing(12)
+        cards.setVerticalSpacing(10)
         self.source_card = DropCard(
-            "APK / XAPK / APKM",
-            "拖拽或选择安装包",
+            "安装包",
+            "APK / XAPK / APKM · 拖拽或选择",
             SUPPORTED_SOURCES,
         )
         self.icon_card = DropCard(
@@ -641,14 +802,27 @@ class MainWindow(QMainWindow):
             SUPPORTED_IMAGES,
         )
         cards.addWidget(self.source_card, 0, 0)
+        cards.addWidget(self.icon_card, 0, 1)
         choose_source = QPushButton("选择安装包")
         choose_icon = QPushButton("选择图标")
         choose_source.clicked.connect(self._choose_source)
         choose_icon.clicked.connect(self._choose_icon)
         cards.addWidget(choose_source, 1, 0)
-        cards.addWidget(self.icon_card, 2, 0)
-        cards.addWidget(choose_icon, 3, 0)
-        layout.addLayout(cards)
+        cards.addWidget(choose_icon, 1, 1)
+        cards.setColumnStretch(0, 1)
+        cards.setColumnStretch(1, 1)
+        input_column.addLayout(cards)
+        input_column.addStretch()
+
+        workflow_column = QVBoxLayout()
+        workflow_column.setSpacing(12)
+        workflow_title = QLabel("2 · 扫描、连接与完成")
+        workflow_title.setObjectName("sectionTitle")
+        workflow_hint = QLabel("选择交接包输出位置与当前窗口使用的手机。")
+        workflow_hint.setObjectName("sectionHint")
+        workflow_hint.setWordWrap(True)
+        workflow_column.addWidget(workflow_title)
+        workflow_column.addWidget(workflow_hint)
 
         output_frame = QFrame()
         output_frame.setObjectName("panel")
@@ -663,7 +837,7 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(output_label)
         output_layout.addWidget(self.output_edit, 1)
         output_layout.addWidget(choose_output)
-        layout.addWidget(output_frame)
+        workflow_column.addWidget(output_frame)
 
         device_frame = QFrame()
         device_frame.setObjectName("panel")
@@ -681,7 +855,7 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo, 1)
         device_layout.addWidget(self.refresh_button)
-        layout.addWidget(device_frame)
+        workflow_column.addWidget(device_frame)
 
         action_row = QHBoxLayout()
         self.scan_button = QPushButton("扫描并生成交接包")
@@ -694,13 +868,13 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
         action_row.addWidget(self.scan_button)
         action_row.addWidget(self.prepare_button)
-        layout.addLayout(action_row)
+        workflow_column.addLayout(action_row)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
-        layout.addWidget(self.progress)
+        workflow_column.addWidget(self.progress)
 
         self.result_panel = QFrame()
         self.result_panel.setObjectName("resultPanel")
@@ -739,8 +913,10 @@ class MainWindow(QMainWindow):
         result_actions.addWidget(self.copy_button)
         result_actions.addStretch()
         result_layout.addLayout(result_actions)
-        layout.addWidget(self.result_panel)
-        layout.addStretch()
+        workflow_column.addWidget(self.result_panel, 1)
+
+        layout.addLayout(input_column, 5)
+        layout.addLayout(workflow_column, 6)
 
         self.source_card.path_changed.connect(self._set_source)
         self.icon_card.path_changed.connect(self._set_icon)
@@ -782,6 +958,8 @@ class MainWindow(QMainWindow):
             QLabel#dropFileName { color: #42536b; font-size: 14px; font-weight: 700; }
             QLabel#dropFileName[selected="true"] { color: #075f4e; font-size: 15px; }
             QLabel#pathLabel { font-size: 12px; }
+            QLabel#sectionTitle { font-size: 19px; font-weight: 750; color: #17233b; }
+            QLabel#sectionHint { color: #64748b; }
             QFrame#panel, QFrame#resultPanel {
                 background: white; border: 1px solid #dfe6ef; border-radius: 12px;
             }

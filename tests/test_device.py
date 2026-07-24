@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from apkba_analyzer.device import AdbClient, prepare_bundle, select_xapk_splits
+from apkba_analyzer.device import (
+    AdbClient,
+    device_session_lock,
+    prepare_bundle,
+    scan_create_and_prepare,
+    select_xapk_splits,
+)
 from apkba_analyzer.models import ScanFailure
 
 
@@ -42,6 +48,33 @@ def test_device_command_is_explicitly_scoped_by_serial(tmp_path: Path) -> None:
     client.invoke(["install", "-r", "app.apk"], serial="PHONE-7")
 
     assert calls == [[str(tmp_path / "adb"), "-s", "PHONE-7", "install", "-r", "app.apk"]]
+
+
+def test_device_session_lock_is_per_serial_and_cross_window_safe(tmp_path: Path) -> None:
+    with device_session_lock("PHONE-A", lock_root=tmp_path):
+        with (
+            pytest.raises(ScanFailure, match="另一个 APKBA 窗口"),
+            device_session_lock("PHONE-A", lock_root=tmp_path),
+        ):
+            pass
+        with device_session_lock("PHONE-B", lock_root=tmp_path):
+            pass
+
+
+def test_prepare_workflow_refuses_a_device_reserved_by_another_window(
+    tmp_path: Path,
+) -> None:
+    serial = "APKBA-TEST-RESERVED-PHONE"
+    with (
+        device_session_lock(serial),
+        pytest.raises(ScanFailure, match="另一个 APKBA 窗口"),
+    ):
+        scan_create_and_prepare(
+            tmp_path / "missing.apk",
+            tmp_path / "missing.webp",
+            tmp_path,
+            serial,
+        )
 
 
 def test_select_xapk_uses_supported_32_bit_abi_and_nearest_density() -> None:
@@ -212,6 +245,7 @@ def test_prepare_writes_agent1_pending_session_without_capturing_media(
 
     pending = json.loads((bundle / ".apkba-pending-session.json").read_text(encoding="utf-8"))
     assert result["status"] == "awaiting_manual_capture"
+    assert result["deviceSerial"] == "PHONE-1"
     assert pending["schema_version"] == 2
     assert pending["capture_mode"] == "manual"
     assert pending["device"]["serial"] == "PHONE-1"

@@ -202,6 +202,9 @@ class MainWindow(QMainWindow):
         self.source_path = ""
         self.icon_path = ""
         self.bundle_path = ""
+        self._selected_device_serial: str | None = None
+        self._active_device_serial: str | None = None
+        self._active_device_display = ""
         self.thread: QThread | None = None
         self.worker: QObject | None = None
         self.copy_reset_timer = QTimer(self)
@@ -268,11 +271,13 @@ class MainWindow(QMainWindow):
         device_frame.setObjectName("panel")
         device_layout = QHBoxLayout(device_frame)
         device_layout.setContentsMargins(14, 10, 14, 10)
-        device_label = QLabel("取证手机")
+        device_label = QLabel("本窗口手机")
         device_label.setObjectName("fieldLabel")
         self.device_combo = QComboBox()
         self.device_combo.addItem("正在检查 USB 调试设备…", None)
         self.device_combo.setMinimumWidth(260)
+        self.device_combo.setToolTip("每个窗口单独选择并绑定一台手机")
+        self.device_combo.currentIndexChanged.connect(self._on_device_selection_changed)
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self._refresh_devices)
         device_layout.addWidget(device_label)
@@ -457,11 +462,11 @@ class MainWindow(QMainWindow):
     def _start_scan(self) -> None:
         output = self.output_edit.text().strip()
         if not self.source_path or not self.icon_path or not output:
-            QMessageBox.information(
-                self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。"
-            )
+            QMessageBox.information(self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。")
             return
         self.settings.setValue("output", output)
+        self._active_device_serial = None
+        self._active_device_display = ""
         self._set_busy(True)
         self.open_button.setVisible(False)
         self.copy_button.setVisible(False)
@@ -489,9 +494,7 @@ class MainWindow(QMainWindow):
         output = self.output_edit.text().strip()
         serial = self.device_combo.currentData()
         if not self.source_path or not self.icon_path or not output:
-            QMessageBox.information(
-                self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。"
-            )
+            QMessageBox.information(self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。")
             return
         if not serial:
             QMessageBox.information(
@@ -500,6 +503,8 @@ class MainWindow(QMainWindow):
                 "请连接手机、开启 USB 调试并授权，然后刷新并选择状态为“已授权”的设备。",
             )
             return
+        self._active_device_serial = str(serial)
+        self._active_device_display = self.device_combo.currentText()
         self.settings.setValue("output", output)
         self._set_busy(True)
         self.open_button.setVisible(False)
@@ -508,7 +513,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(1)
         self.status_badge.setText("准备中")
         self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
-        self.status_text.setText("正在静态扫描；通过后才会安装到所选手机…")
+        self.status_text.setText(f"目标已锁定：{self._active_device_display}；正在静态扫描…")
         self.detail_label.clear()
         self.thread = QThread(self)
         self.worker = PrepareWorker(
@@ -532,8 +537,16 @@ class MainWindow(QMainWindow):
     def _refresh_devices(self) -> None:
         if self.thread and self.thread.isRunning():
             return
-        self.device_combo.clear()
-        self.device_combo.addItem("正在检查 USB 调试设备…", None)
+        current_serial = self.device_combo.currentData()
+        if current_serial:
+            self._selected_device_serial = str(current_serial)
+        signals_were_blocked = self.device_combo.blockSignals(True)
+        try:
+            self.device_combo.clear()
+            self.device_combo.addItem("正在检查 USB 调试设备…", None)
+        finally:
+            self.device_combo.blockSignals(signals_were_blocked)
+        self.device_combo.setEnabled(False)
         self.refresh_button.setEnabled(False)
         self.thread = QThread(self)
         self.worker = DeviceWorker()
@@ -551,34 +564,106 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_devices(self, devices: object) -> None:
         self.refresh_button.setEnabled(True)
-        self.device_combo.clear()
+        self.device_combo.setEnabled(True)
         rows = list(devices)
-        online_count = 0
-        for row in rows:
-            serial = row.get("serial", "")
-            state = row.get("state", "")
-            model = str(row.get("model") or row.get("device") or "Android 设备").replace("_", " ")
-            if state == "device":
-                self.device_combo.addItem(f"{model} · 已授权 · {serial}", serial)
-                online_count += 1
+        online_serials = [
+            str(row.get("serial") or "")
+            for row in rows
+            if row.get("state") == "device" and row.get("serial")
+        ]
+        remembered_serial = self._selected_device_serial
+        signals_were_blocked = self.device_combo.blockSignals(True)
+        try:
+            self.device_combo.clear()
+            for row in rows:
+                serial = str(row.get("serial") or "")
+                state = row.get("state", "")
+                model = str(row.get("model") or row.get("device") or "Android 设备").replace(
+                    "_", " "
+                )
+                if state == "device":
+                    self.device_combo.addItem(f"{model} · 已授权 · {serial}", serial)
+                else:
+                    state_text = "等待手机授权" if state == "unauthorized" else state
+                    self.device_combo.addItem(f"{model} · {state_text} · {serial}", None)
+
+            if not rows:
+                self.device_combo.addItem("未发现设备：请连接数据线并开启 USB 调试", None)
+            elif not online_serials:
+                self.device_combo.insertItem(0, "没有已授权设备，请查看手机弹窗", None)
+            elif len(online_serials) > 1:
+                self.device_combo.insertItem(
+                    0,
+                    f"请选择本窗口使用的手机（{len(online_serials)} 台已授权）",
+                    None,
+                )
+
+            remembered_index = (
+                self.device_combo.findData(remembered_serial) if remembered_serial else -1
+            )
+            if remembered_index >= 0:
+                self.device_combo.setCurrentIndex(remembered_index)
+            elif remembered_serial:
+                self.device_combo.insertItem(
+                    0,
+                    f"原绑定手机已断开 · {remembered_serial}",
+                    None,
+                )
+                self.device_combo.setCurrentIndex(0)
+            elif len(online_serials) == 1:
+                self.device_combo.setCurrentIndex(self.device_combo.findData(online_serials[0]))
             else:
-                state_text = "等待手机授权" if state == "unauthorized" else state
-                self.device_combo.addItem(f"{model} · {state_text} · {serial}", None)
-        if not rows:
-            self.device_combo.addItem("未发现设备：请连接数据线并开启 USB 调试", None)
-        elif not online_count:
-            self.device_combo.insertItem(0, "没有已授权设备，请查看手机弹窗", None)
+                self.device_combo.setCurrentIndex(0)
+        finally:
+            self.device_combo.blockSignals(signals_were_blocked)
+
+        selected_serial = self.device_combo.currentData()
+        if selected_serial:
+            self._selected_device_serial = str(selected_serial)
+        self._update_device_tooltip()
 
     @Slot(str, str)
     def _on_device_failure(self, message: str, _detail: str) -> None:
         self.refresh_button.setEnabled(True)
-        self.device_combo.clear()
-        self.device_combo.addItem(f"ADB 不可用：{message}", None)
+        self.device_combo.setEnabled(True)
+        signals_were_blocked = self.device_combo.blockSignals(True)
+        try:
+            self.device_combo.clear()
+            suffix = (
+                f"；原绑定 {self._selected_device_serial}" if self._selected_device_serial else ""
+            )
+            self.device_combo.addItem(f"ADB 不可用：{message}{suffix}", None)
+        finally:
+            self.device_combo.blockSignals(signals_were_blocked)
+        self._update_device_tooltip()
+
+    @Slot(int)
+    def _on_device_selection_changed(self, _index: int) -> None:
+        serial = self.device_combo.currentData()
+        if serial:
+            self._selected_device_serial = str(serial)
+        self._update_device_tooltip()
+
+    def _update_device_tooltip(self) -> None:
+        serial = self.device_combo.currentData()
+        if serial:
+            message = f"本窗口已绑定到设备序列号：{serial}"
+        elif self._selected_device_serial:
+            message = (
+                f"原绑定设备 {self._selected_device_serial} 当前不可用；不会自动切换到其他手机"
+            )
+        else:
+            message = "每个窗口必须单独选择一台手机"
+        self.device_combo.setToolTip(message)
+        self.prepare_button.setToolTip(message)
 
     @Slot(int, str)
     def _on_progress(self, value: int, message: str) -> None:
         self.progress.setValue(value)
-        self.status_text.setText(message)
+        if self._active_device_serial:
+            self.status_text.setText(f"{message} ｜ 目标：{self._active_device_display}")
+        else:
+            self.status_text.setText(message)
 
     @Slot(object, str)
     def _on_success(self, report: object, bundle: str) -> None:
@@ -628,7 +713,8 @@ class MainWindow(QMainWindow):
         self.detail_label.setText(
             f"应用：{app.get('applicationLabel') or '未确认'}\n"
             f"包名：{app.get('packageName') or '未确认'}\n"
-            f"手机：{prepare_result.get('deviceModel') or '未确认'}\n"
+            f"手机：{prepare_result.get('deviceModel') or '未确认'}"
+            f" · {prepare_result.get('deviceSerial') or '序列号未确认'}\n"
             f"启动结果：{prepare_result.get('launchStatus') or '未确认'}\n"
             f"前台页面：{prepare_result.get('focusedActivity') or '未确认'}\n"
             f"签名证书 SHA-256：{certificate}\n\n"
@@ -646,17 +732,23 @@ class MainWindow(QMainWindow):
         self.status_badge.setText("失败")
         self.status_badge.setStyleSheet("background:#fee8e7;color:#a52a24")
         self.status_text.setText(message)
-        self.detail_label.setText(detail)
+        target = (
+            f"目标手机：{self._active_device_display}\n\n" if self._active_device_serial else ""
+        )
+        self.detail_label.setText(target + detail)
 
     def _set_busy(self, busy: bool) -> None:
         self.scan_button.setEnabled(not busy)
         self.prepare_button.setEnabled(not busy)
         self.refresh_button.setEnabled(not busy)
+        self.device_combo.setEnabled(not busy)
 
     @Slot()
     def _thread_finished(self) -> None:
         self.worker = None
         self.thread = None
+        self._active_device_serial = None
+        self._active_device_display = ""
 
     def _open_bundle(self) -> None:
         if self.bundle_path:
@@ -664,11 +756,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _local_drop_paths(event: QDragEnterEvent | QDropEvent) -> list[Path]:
-        return [
-            Path(url.toLocalFile())
-            for url in event.mimeData().urls()
-            if url.isLocalFile()
-        ]
+        return [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
 
     def _set_drop_highlights(self, paths: list[Path]) -> bool:
         source_ready = any(
@@ -687,19 +775,11 @@ class MainWindow(QMainWindow):
 
     def _route_dropped_paths(self, paths: list[Path]) -> bool:
         source = next(
-            (
-                path
-                for path in paths
-                if path.is_file() and path.suffix.lower() in SUPPORTED_SOURCES
-            ),
+            (path for path in paths if path.is_file() and path.suffix.lower() in SUPPORTED_SOURCES),
             None,
         )
         icon = next(
-            (
-                path
-                for path in paths
-                if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES
-            ),
+            (path for path in paths if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES),
             None,
         )
         if source:
@@ -747,10 +827,7 @@ class MainWindow(QMainWindow):
     def _copy_handoff_message(self) -> None:
         if not self.bundle_path:
             return
-        message = (
-            "好了。\n"
-            f"交接包：{self.bundle_path}"
-        )
+        message = f"好了。\n交接包：{self.bundle_path}"
         QApplication.clipboard().setText(message)
         self.copy_button.setText("✓ 已复制到剪贴板")
         self.copy_reset_timer.start(2200)

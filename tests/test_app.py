@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QThread, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication
 
@@ -42,10 +42,7 @@ def test_copy_handoff_message_puts_ready_text_on_clipboard(
 
     window._copy_handoff_message()
 
-    assert QApplication.clipboard().text() == (
-        "好了。\n"
-        f"交接包：{bundle}"
-    )
+    assert QApplication.clipboard().text() == (f"好了。\n交接包：{bundle}")
     assert window.copy_button.text() == "✓ 已复制到剪贴板"
     window.close()
 
@@ -86,3 +83,92 @@ def test_full_window_drop_routes_apkm_and_image_together(
     assert window.source_card.file_name_label.text() == source.name
     assert window.icon_card.file_name_label.text() == icon.name
     window.close()
+
+
+def test_two_windows_require_and_preserve_independent_device_choices(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    devices = [
+        {"serial": "PHONE-A", "state": "device", "model": "Pixel_A"},
+        {"serial": "PHONE-B", "state": "device", "model": "Pixel_B"},
+    ]
+    first = MainWindow()
+    second = MainWindow()
+
+    first._on_devices(devices)
+    second._on_devices(devices)
+
+    assert first.device_combo.currentData() is None
+    assert second.device_combo.currentData() is None
+    first.device_combo.setCurrentIndex(first.device_combo.findData("PHONE-A"))
+    second.device_combo.setCurrentIndex(second.device_combo.findData("PHONE-B"))
+
+    first._on_devices(list(reversed(devices)))
+    second._on_devices(list(reversed(devices)))
+
+    assert first.device_combo.currentData() == "PHONE-A"
+    assert second.device_combo.currentData() == "PHONE-B"
+    first.close()
+    second.close()
+
+
+def test_refresh_never_switches_a_window_to_the_remaining_phone(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    window = MainWindow()
+    window._on_devices(
+        [
+            {"serial": "PHONE-A", "state": "device", "model": "Pixel_A"},
+            {"serial": "PHONE-B", "state": "device", "model": "Pixel_B"},
+        ]
+    )
+    window.device_combo.setCurrentIndex(window.device_combo.findData("PHONE-B"))
+
+    window._on_devices([{"serial": "PHONE-A", "state": "device", "model": "Pixel_A"}])
+
+    assert window.device_combo.currentData() is None
+    assert window._selected_device_serial == "PHONE-B"
+    assert "PHONE-B" in window.device_combo.currentText()
+
+    window._on_devices(
+        [
+            {"serial": "PHONE-A", "state": "device", "model": "Pixel_A"},
+            {"serial": "PHONE-B", "state": "device", "model": "Pixel_B"},
+        ]
+    )
+
+    assert window.device_combo.currentData() == "PHONE-B"
+    window.close()
+
+
+def test_two_windows_capture_distinct_serials_when_prepare_starts(
+    qt_app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    monkeypatch.setattr(QThread, "start", lambda _self: None)
+    devices = [
+        {"serial": "PHONE-A", "state": "device", "model": "Pixel_A"},
+        {"serial": "PHONE-B", "state": "device", "model": "Pixel_B"},
+    ]
+    first = MainWindow()
+    second = MainWindow()
+    for window, serial in ((first, "PHONE-A"), (second, "PHONE-B")):
+        window.source_path = "fixture.apk"
+        window.icon_path = "fixture.webp"
+        window.output_edit.setText(str(tmp_path))
+        window._on_devices(devices)
+        window.device_combo.setCurrentIndex(window.device_combo.findData(serial))
+        window._start_prepare()
+
+    assert first.worker.serial == "PHONE-A"
+    assert second.worker.serial == "PHONE-B"
+    assert first.device_combo.isEnabled() is False
+    assert second.device_combo.isEnabled() is False
+    first.thread = None
+    second.thread = None
+    first.close()
+    second.close()

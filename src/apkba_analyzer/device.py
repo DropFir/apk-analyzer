@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -11,7 +12,8 @@ import sys
 import tempfile
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -71,6 +73,58 @@ def _progress(callback: Progress | None, value: int, message: str) -> None:
 def _output_summary(text: str, maximum: int = 500) -> str:
     summary = " | ".join(line.strip() for line in text.splitlines()[-6:] if line.strip())
     return summary if len(summary) <= maximum else summary[:maximum] + "..."
+
+
+@contextmanager
+def device_session_lock(
+    serial: str,
+    *,
+    lock_root: Path | None = None,
+) -> Iterator[None]:
+    """Reserve one device across analyzer windows and processes."""
+
+    root = lock_root or Path(tempfile.gettempdir()) / "apkba-analyzer-device-locks"
+    root.mkdir(parents=True, exist_ok=True)
+    identity = hashlib.sha256(serial.encode("utf-8")).hexdigest()
+    lock_path = root / f"{identity}.lock"
+    handle = lock_path.open("a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError) as error:
+        handle.close()
+        raise ScanFailure(
+            f"手机 {serial} 正被另一个 APKBA 窗口使用。"
+            "请为本窗口选择另一台手机，或等待另一个窗口完成。"
+        ) from error
+
+    try:
+        yield
+    finally:
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 class AdbClient:
@@ -274,9 +328,7 @@ def select_xapk_splits(xapk: dict[str, Any], device: dict[str, Any]) -> list[str
         return None
 
     config_rows = [
-        (row, parts[0], parts[1])
-        for row in rows
-        if (parts := config_parts(row)) is not None
+        (row, parts[0], parts[1]) for row in rows if (parts := config_parts(row)) is not None
     ]
 
     def grouped(
@@ -294,9 +346,7 @@ def select_xapk_splits(xapk: dict[str, Any], device: dict[str, Any]) -> list[str
         "x86_64": "x86_64",
         "x86": "x86",
     }
-    available_abi = grouped(
-        [item for item in config_rows if item[2] in abi_qualifiers.values()]
-    )
+    available_abi = grouped([item for item in config_rows if item[2] in abi_qualifiers.values()])
     supported = list(device.get("supported_abis") or [device.get("abi")])
     for module, candidates in available_abi.items():
         match = next(
@@ -310,9 +360,7 @@ def select_xapk_splits(xapk: dict[str, Any], device: dict[str, Any]) -> list[str
         )
         if not match:
             provided = ", ".join(qualifier for _row, qualifier in candidates)
-            raise ScanFailure(
-                f"手机 ABI 与分包模块 {module} 不兼容；分包提供：{provided}。"
-            )
+            raise ScanFailure(f"手机 ABI 与分包模块 {module} 不兼容；分包提供：{provided}。")
         selected.append(str(match["file"]))
 
     density_map = {
@@ -327,9 +375,7 @@ def select_xapk_splits(xapk: dict[str, Any], device: dict[str, Any]) -> list[str
     density_groups = grouped([item for item in config_rows if item[2] in density_map])
     target = int(device.get("density_dpi") or 420)
     for candidates in density_groups.values():
-        match, _qualifier = min(
-            candidates, key=lambda item: abs(density_map[item[1]] - target)
-        )
+        match, _qualifier = min(candidates, key=lambda item: abs(density_map[item[1]] - target))
         selected.append(str(match["file"]))
 
     def is_language(qualifier: str) -> bool:
@@ -475,8 +521,7 @@ def prepare_bundle(
     install_output = (install.stdout or "") + "\n" + (install.stderr or "")
     if install.returncode or not re.search(r"(?m)^Success\s*$", install_output):
         raise ScanFailure(
-            "安装没有成功；工具不会自动卸载、降级或重试。"
-            f"\n{_output_summary(install_output)}"
+            f"安装没有成功；工具不会自动卸载、降级或重试。\n{_output_summary(install_output)}"
         )
     setup["install"] = {
         "started_local": install_started,
@@ -633,9 +678,7 @@ def prepare_bundle(
             "screenshot_directory": SCREENSHOT_DIRECTORY,
             "recording_directory": RECORDING_DIRECTORY,
             "latest_screenshot_before_capture": (
-                PurePosixPath(latest_screenshot["remote_path"]).name
-                if latest_screenshot
-                else None
+                PurePosixPath(latest_screenshot["remote_path"]).name if latest_screenshot else None
             ),
             "latest_recording_before_capture": (
                 PurePosixPath(latest_recording["remote_path"]).name if latest_recording else None
@@ -659,6 +702,7 @@ def prepare_bundle(
         "pendingPath": str(pending_path),
         "packageName": package_name,
         "appName": app_label,
+        "deviceSerial": serial,
         "deviceModel": device.get("model"),
         "launchStatus": launch_result,
         "focusedActivity": focused,
@@ -676,15 +720,16 @@ def scan_create_and_prepare(
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     """Run the editor workflow once: scan, create intake, install, launch, baseline."""
 
-    report = scan_package(
-        source_path,
-        icon_path,
-        profile="standard",
-        progress=(lambda value, message: _progress(progress, int(value * 0.62), message)),
-    )
-    if report["status"] == "blocked":
-        raise ScanFailure("静态扫描发现阻塞项，未安装到手机。")
-    _progress(progress, 63, "复制原件并生成 Agent1 交接包…")
-    bundle = create_intake_bundle(report, source_path, icon_path, output_root)
-    result = prepare_bundle(report, bundle, serial, adb=adb, progress=progress)
-    return report, bundle, result
+    with device_session_lock(serial):
+        report = scan_package(
+            source_path,
+            icon_path,
+            profile="standard",
+            progress=(lambda value, message: _progress(progress, int(value * 0.62), message)),
+        )
+        if report["status"] == "blocked":
+            raise ScanFailure("静态扫描发现阻塞项，未安装到手机。")
+        _progress(progress, 63, "复制原件并生成 Agent1 交接包…")
+        bundle = create_intake_bundle(report, source_path, icon_path, output_root)
+        result = prepare_bundle(report, bundle, serial, adb=adb, progress=progress)
+        return report, bundle, result

@@ -186,6 +186,14 @@ def _number_or_text(value: Any) -> int | str | None:
         return str(value)
 
 
+def _split_types(value: Any) -> list[str]:
+    return sorted({item.strip() for item in str(value or "").split(",") if item.strip()})
+
+
+def _manifest_boolean(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "0xffffffff"}
+
+
 def _parse_manifest_xml(text: str) -> dict[str, Any]:
     start = text.find("<manifest")
     if start < 0:
@@ -198,6 +206,14 @@ def _parse_manifest_xml(text: str) -> dict[str, Any]:
 
     application = root.find("application")
     uses_sdk = root.find("uses-sdk")
+    required_split_types = _split_types(_android_attribute(root, "requiredSplitTypes"))
+    splits_required = bool(required_split_types)
+    if application is not None:
+        for metadata in application.findall("meta-data"):
+            if _android_attribute(metadata, "name") == "com.android.vending.splits.required":
+                splits_required = splits_required or _manifest_boolean(
+                    _android_attribute(metadata, "value")
+                )
     permissions = sorted(
         {
             value
@@ -243,6 +259,8 @@ def _parse_manifest_xml(text: str) -> dict[str, Any]:
         "launcherTargetActivity": _android_attribute(launcher, "targetActivity"),
         "launcherNodeType": launcher_type,
         "splitName": root.attrib.get("split") or None,
+        "requiredSplitTypes": required_split_types,
+        "splitRequired": splits_required,
     }
 
 
@@ -278,6 +296,16 @@ def _manifest_with_androguard(path: Path) -> dict[str, Any]:
     try:
         logger.disable("androguard")
         apk = APK(str(path))
+        required_split_types = _split_types(
+            apk.get_attribute_value("manifest", "requiredSplitTypes")
+        )
+        splits_required = bool(required_split_types) or _manifest_boolean(
+            apk.get_attribute_value(
+                "meta-data",
+                "value",
+                name="com.android.vending.splits.required",
+            )
+        )
         return {
             "applicationLabel": apk.get_app_name() or None,
             "packageName": apk.get_package() or None,
@@ -290,6 +318,8 @@ def _manifest_with_androguard(path: Path) -> dict[str, Any]:
             "launcherTargetActivity": None,
             "launcherNodeType": "activity" if apk.get_main_activity() else None,
             "splitName": apk.get_attribute_value("manifest", "split") or None,
+            "requiredSplitTypes": required_split_types,
+            "splitRequired": splits_required,
         }
     except Exception as error:  # Androguard exposes parser-specific exception types.
         raise ScanFailure(f"Androguard 解析失败：{error}") from error
@@ -847,6 +877,32 @@ def scan_package(
             if source.suffix.lower() == ".apk":
                 _progress(progress, 50, "解析 APK manifest…")
                 app, parser_name = _parse_apk_manifest(source, apkanalyzer, findings)
+                if app.get("splitRequired"):
+                    required_split_types = list(app.get("requiredSplitTypes") or [])
+                    labels = {
+                        "base__abi": "CPU 架构（ABI）",
+                        "base__density": "屏幕密度",
+                        "base__locale": "语言",
+                    }
+                    required_text = "、".join(
+                        labels.get(value, value) for value in required_split_types
+                    )
+                    message = "该 APK 是需要配套 split 的 base APK，不能单独安装。"
+                    if required_text:
+                        message += f" 必需分包类型：{required_text}。"
+                    message += "请提供完整 XAPK/APKM/APKS。"
+                    findings.append(
+                        Finding(
+                            "error",
+                            "manifest.required_splits_missing",
+                            message,
+                            (
+                                "requiredSplitTypes=" + ",".join(required_split_types)
+                                if required_split_types
+                                else "com.android.vending.splits.required=true"
+                            ),
+                        )
+                    )
                 _progress(progress, 68, "验证 APK 签名…")
                 signature = _verify_apk_signature(source, apksigner)
                 if signature["status"] == "failed":

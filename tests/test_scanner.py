@@ -23,6 +23,22 @@ MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
   </application>
 </manifest>"""
 
+REQUIRED_SPLIT_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.fixture" android:versionName="2.4.1" android:versionCode="241"
+    android:requiredSplitTypes="base__abi,base__density">
+  <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="35" />
+  <application android:label="Fixture App">
+    <meta-data android:name="com.android.vending.splits.required" android:value="true" />
+    <activity android:name=".MainActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>"""
+
 
 def make_apk(path: Path, manifest: str = MANIFEST) -> None:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -63,12 +79,36 @@ def test_non_square_icon_blocks_bundle(tmp_path: Path) -> None:
     assert any(item["code"] == "icon.not_square" for item in report["findings"])
 
 
+def test_standalone_base_apk_with_required_splits_is_blocked(tmp_path: Path) -> None:
+    source = tmp_path / "base.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source, REQUIRED_SPLIT_MANIFEST)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "blocked"
+    assert report["app"]["splitRequired"] is True
+    assert report["app"]["requiredSplitTypes"] == ["base__abi", "base__density"]
+    finding = next(
+        item for item in report["findings"] if item["code"] == "manifest.required_splits_missing"
+    )
+    assert "CPU 架构" in finding["message"]
+    assert "屏幕密度" in finding["message"]
+
+
 def test_xapk_inventory_and_base_manifest(tmp_path: Path) -> None:
     base = tmp_path / "base.apk"
     split = tmp_path / "config.arm64_v8a.apk"
     source = tmp_path / "fixture.xapk"
     icon = tmp_path / "icon.png"
-    make_apk(base)
+    make_apk(
+        base,
+        REQUIRED_SPLIT_MANIFEST.replace(
+            "base__abi,base__density",
+            "base__abi",
+        ),
+    )
     make_apk(split, MANIFEST.replace("<manifest ", '<manifest split="config.arm64_v8a" '))
     xapk_manifest = {
         "xapk_version": 2,
@@ -96,6 +136,10 @@ def test_xapk_inventory_and_base_manifest(tmp_path: Path) -> None:
     assert report["xapk"]["baseApk"] == "base.apk"
     assert len(report["xapk"]["splits"]) == 2
     assert all(row["sha256"] for row in report["xapk"]["splits"])
+    assert report["app"]["splitRequired"] is True
+    assert not any(
+        item["code"] == "manifest.required_splits_missing" for item in report["findings"]
+    )
 
 
 def test_apkm_inventory_and_base_manifest(tmp_path: Path) -> None:

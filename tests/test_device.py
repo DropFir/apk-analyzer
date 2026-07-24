@@ -77,6 +77,27 @@ def test_prepare_workflow_refuses_a_device_reserved_by_another_window(
         )
 
 
+def test_prepare_workflow_reports_the_actual_static_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "apkba_analyzer.device.scan_package",
+        lambda *_args, **_kwargs: {
+            "status": "blocked",
+            "blockers": ["该 APK 是需要配套 split 的 base APK，不能单独安装。"],
+        },
+    )
+
+    with pytest.raises(ScanFailure, match="需要配套 split"):
+        scan_create_and_prepare(
+            tmp_path / "base.apk",
+            tmp_path / "icon.webp",
+            tmp_path,
+            "APKBA-TEST-BLOCKED-PHONE",
+        )
+
+
 def test_select_xapk_uses_supported_32_bit_abi_and_nearest_density() -> None:
     xapk = {
         "baseApk": "base.apk",

@@ -728,7 +728,11 @@ def scan_create_and_prepare(
             progress=(lambda value, message: _progress(progress, int(value * 0.62), message)),
         )
         if report["status"] == "blocked":
-            raise ScanFailure("静态扫描发现阻塞项，未安装到手机。")
+            blockers = list(report.get("blockers") or [])
+            blocker_text = (
+                "\n" + "\n".join(f"- {message}" for message in blockers) if blockers else ""
+            )
+            raise ScanFailure("静态扫描发现阻塞项，未安装到手机。" + blocker_text)
         _progress(progress, 63, "复制原件并生成 Agent1 交接包…")
         bundle = create_intake_bundle(report, source_path, icon_path, output_root)
         result = prepare_bundle(report, bundle, serial, adb=adb, progress=progress)

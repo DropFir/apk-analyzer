@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QThread, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from apkba_analyzer.app import DropCard, MainWindow
@@ -111,6 +111,36 @@ def test_two_windows_require_and_preserve_independent_device_choices(
     assert second.device_combo.currentData() == "PHONE-B"
     first.close()
     second.close()
+
+
+def test_page_scroll_cannot_change_the_selected_device(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    window = MainWindow()
+    window._on_devices(
+        [
+            {"serial": "PHONE-A", "state": "device", "model": "Pixel_A"},
+            {"serial": "PHONE-B", "state": "device", "model": "Pixel_B"},
+        ]
+    )
+    window.device_combo.setCurrentIndex(window.device_combo.findData("PHONE-B"))
+    event = QWheelEvent(
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+
+    QApplication.sendEvent(window.device_combo, event)
+
+    assert window.device_combo.currentData() == "PHONE-B"
+    assert event.isAccepted() is False
+    window.close()
 
 
 def test_refresh_never_switches_a_window_to_the_remaining_phone(

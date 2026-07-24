@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
     QDropEvent,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -126,6 +127,16 @@ class DropCard(QFrame):
                 self.set_path(str(path))
                 event.acceptProposedAction()
                 return
+
+
+class DeviceComboBox(QComboBox):
+    """Require an explicit click before wheel input can change the device."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
 
 
 class ScanWorker(QObject):
@@ -273,7 +284,7 @@ class MainWindow(QMainWindow):
         device_layout.setContentsMargins(14, 10, 14, 10)
         device_label = QLabel("本窗口手机")
         device_label.setObjectName("fieldLabel")
-        self.device_combo = QComboBox()
+        self.device_combo = DeviceComboBox()
         self.device_combo.addItem("正在检查 USB 调试设备…", None)
         self.device_combo.setMinimumWidth(260)
         self.device_combo.setToolTip("每个窗口单独选择并绑定一台手机")

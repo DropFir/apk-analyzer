@@ -54,3 +54,33 @@ def test_bundle_copy_uses_detected_source_format_extension(tmp_path: Path) -> No
     handoff = json.loads((bundle / "agent1_handoff.json").read_text(encoding="utf-8"))
     assert handoff["source"]["path"] == "downloaded_pending.xapk"
     assert handoff["source"]["format"] == "xapk"
+
+
+def test_optional_developer_text_is_copied_and_recorded(tmp_path: Path) -> None:
+    source = tmp_path / "bundle.apk"
+    icon = tmp_path / "art.png"
+    developer = tmp_path / "developer.txt"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", MANIFEST)
+    Image.new("RGB", (512, 512), "#087763").save(icon)
+    developer.write_text("SEGA\n", encoding="utf-8")
+    report = scan_package(source, icon, profile="quick")
+
+    bundle = create_intake_bundle(
+        report,
+        source,
+        icon,
+        output,
+        developer_path=developer,
+    )
+
+    copied = bundle / "developer.txt"
+    handoff = json.loads((bundle / "agent1_handoff.json").read_text(encoding="utf-8"))
+    scan_report = json.loads((bundle / "scan_report.json").read_text(encoding="utf-8"))
+    assert copied.read_text(encoding="utf-8").strip() == "SEGA"
+    assert handoff["developer"]["name"] == "SEGA"
+    assert handoff["developer"]["source"] == "operator_provided_text_file"
+    assert handoff["developer"]["path"] == "developer.txt"
+    assert handoff["developer"]["sha256"]
+    assert scan_report["developer"]["name"] == "SEGA"

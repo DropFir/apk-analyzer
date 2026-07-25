@@ -20,7 +20,7 @@ from typing import Any
 
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.models import ScanFailure
-from apkba_analyzer.scanner import scan_package
+from apkba_analyzer.scanner import _hash_file, scan_package
 from apkba_analyzer.tools import _subprocess_creation_flags
 
 SCREENSHOT_DIRECTORY = "/sdcard/DCIM/Screenshots"
@@ -630,6 +630,27 @@ def prepare_bundle(
     handoff = json.loads((bundle / "agent1_handoff.json").read_text(encoding="utf-8"))
     source = (bundle / handoff["source"]["path"]).resolve()
     icon = (bundle / handoff["icon"]["path"]).resolve()
+    handoff_developer = handoff.get("developer")
+    developer = None
+    if isinstance(handoff_developer, dict) and handoff_developer.get("name"):
+        developer_path = (bundle / str(handoff_developer.get("path") or "")).resolve()
+        if not developer_path.is_file() or developer_path.parent != bundle.resolve():
+            raise ScanFailure("交接包中的可选开发者信息文件已丢失或路径无效。")
+        expected_developer_hash = str(handoff_developer.get("sha256") or "")
+        if (
+            not expected_developer_hash
+            or _hash_file(developer_path).upper() != expected_developer_hash.upper()
+        ):
+            raise ScanFailure("交接包中的可选开发者信息文件 SHA-256 校验失败。")
+        developer = {
+            "name": str(handoff_developer["name"]),
+            "source": str(
+                handoff_developer.get("source") or "operator_provided_text_file"
+            ),
+            "path": str(developer_path),
+            "file_name": developer_path.name,
+            "sha256": expected_developer_hash.upper(),
+        }
     pending_path = bundle / PENDING_FILE_NAME
     if pending_path.exists():
         raise ScanFailure(f"该交接包已有未完成取证：{pending_path}")
@@ -789,6 +810,7 @@ def prepare_bundle(
         "capture_mode": "manual",
         "evidence_root": str(bundle.resolve()),
         "source_note": "User-provided package; source attribution was not independently verified.",
+        "developer": developer,
         "source": {
             "path": str(source),
             "file_name": source.name,
@@ -810,6 +832,8 @@ def prepare_bundle(
             "target_sdk": app.get("targetSdk"),
             "launch_activity": app.get("launcherActivity"),
             "declared_permissions": list(app.get("permissions") or []),
+            "developer_name": (developer or {}).get("name"),
+            "developer_source": (developer or {}).get("source"),
             "native_abis": list((app.get("nativeCode") or {}).get("abis") or []),
             "native_library_count": int(
                 (app.get("nativeCode") or {}).get("libraryCount") or 0
@@ -886,6 +910,7 @@ def scan_create_and_prepare(
     output_root: str | os.PathLike[str],
     serial: str,
     *,
+    developer_path: str | os.PathLike[str] | None = None,
     adb: AdbClient | None = None,
     progress: Progress | None = None,
     confirm_low_target_sdk: LowTargetSdkConfirmation | None = None,
@@ -924,7 +949,13 @@ def scan_create_and_prepare(
                 "authorization": "explicit_operator_confirmation",
             }
         _progress(progress, 63, "复制原件并生成 Agent1 交接包…")
-        bundle = create_intake_bundle(report, source_path, icon_path, output_root)
+        bundle = create_intake_bundle(
+            report,
+            source_path,
+            icon_path,
+            output_root,
+            developer_path=developer_path,
+        )
         result = prepare_bundle(
             report,
             bundle,

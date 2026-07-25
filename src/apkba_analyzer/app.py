@@ -65,6 +65,7 @@ from apkba_analyzer.finish import (
     finish_preflight,
     prepare_media_review,
 )
+from apkba_analyzer.intake import SUPPORTED_DEVELOPER_FILES
 from apkba_analyzer.phone_images import export_phone_images, list_phone_images
 from apkba_analyzer.scanner import SUPPORTED_IMAGES, SUPPORTED_SOURCES
 
@@ -376,10 +377,18 @@ class PrepareWorker(QObject):
     failed = Signal(str, str)
     low_target_sdk_confirmation_required = Signal(object)
 
-    def __init__(self, source: str, icon: str, output: str, serial: str):
+    def __init__(
+        self,
+        source: str,
+        icon: str,
+        developer: str,
+        output: str,
+        serial: str,
+    ):
         super().__init__()
         self.source = source
         self.icon = icon
+        self.developer = developer
         self.output = output
         self.serial = serial
         self._low_target_sdk_confirmation = threading.Event()
@@ -404,6 +413,7 @@ class PrepareWorker(QObject):
                 self.icon,
                 self.output,
                 self.serial,
+                developer_path=self.developer or None,
                 progress=lambda value, message: self.progress.emit(value, message),
                 confirm_low_target_sdk=self._confirm_low_target_sdk,
             )
@@ -1057,6 +1067,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.source_path = ""
         self.icon_path = ""
+        self.developer_path = ""
         self.bundle_path = ""
         self._open_path = ""
         self._selected_device_serial: str | None = None
@@ -1109,16 +1120,26 @@ class MainWindow(QMainWindow):
             "PNG / JPG / WebP / AVIF · 正方形",
             SUPPORTED_IMAGES,
         )
+        self.developer_card = DropCard(
+            "开发者信息（可选）",
+            "UTF-8 TXT · 例如：SEGA",
+            SUPPORTED_DEVELOPER_FILES,
+        )
         cards.addWidget(self.source_card, 0, 0)
         cards.addWidget(self.icon_card, 0, 1)
+        cards.addWidget(self.developer_card, 0, 2)
         choose_source = QPushButton("选择安装包")
         choose_icon = QPushButton("选择图标")
+        choose_developer = QPushButton("选择开发者 TXT（可选）")
         choose_source.clicked.connect(self._choose_source)
         choose_icon.clicked.connect(self._choose_icon)
+        choose_developer.clicked.connect(self._choose_developer)
         cards.addWidget(choose_source, 1, 0)
         cards.addWidget(choose_icon, 1, 1)
+        cards.addWidget(choose_developer, 1, 2)
         cards.setColumnStretch(0, 1)
         cards.setColumnStretch(1, 1)
+        cards.setColumnStretch(2, 1)
         input_column.addLayout(cards)
 
         self.workflow_section = QFrame()
@@ -1223,11 +1244,13 @@ class MainWindow(QMainWindow):
 
         self.source_card.path_changed.connect(self._set_source)
         self.icon_card.path_changed.connect(self._set_icon)
+        self.developer_card.path_changed.connect(self._set_developer)
         for drop_target in (
             scroll.viewport(),
             root,
             self.source_card,
             self.icon_card,
+            self.developer_card,
             self.output_edit,
             self.device_combo,
         ):
@@ -1525,11 +1548,19 @@ class MainWindow(QMainWindow):
         self.icon_path = path
         self._update_file_selection_status()
 
+    @Slot(str)
+    def _set_developer(self, path: str) -> None:
+        self.developer_path = path
+        self._update_file_selection_status()
+
     def _update_file_selection_status(self) -> None:
         if self.source_path and self.icon_path:
             self.status_badge.setText("文件已就绪")
             self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
-            self.status_text.setText("安装包和图标均已添加，可以开始扫描。")
+            if self.developer_path:
+                self.status_text.setText("安装包、图标和可选开发者信息均已添加，可以开始扫描。")
+            else:
+                self.status_text.setText("安装包和图标均已添加，可以开始扫描；开发者信息可选。")
         elif self.source_path:
             self.status_badge.setText("已选择 1/2")
             self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
@@ -1538,6 +1569,10 @@ class MainWindow(QMainWindow):
             self.status_badge.setText("已选择 1/2")
             self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
             self.status_text.setText("图标已添加，再选择一个 APK/XAPK/APKM。")
+        elif self.developer_path:
+            self.status_badge.setText("已添加可选信息")
+            self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+            self.status_text.setText("开发者信息已添加；还需要选择安装包和图标。")
 
     def _choose_source(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1555,6 +1590,16 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.icon_card.set_path(path)
+
+    def _choose_developer(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择开发者信息（可选）",
+            "",
+            "Developer text (*.txt)",
+        )
+        if path:
+            self.developer_card.set_path(path)
 
     def _choose_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择输出位置", self.output_edit.text())
@@ -1603,6 +1648,7 @@ class MainWindow(QMainWindow):
         self.worker = PrepareWorker(
             self.source_path,
             self.icon_path,
+            self.developer_path,
             output,
             str(serial),
         )
@@ -1994,8 +2040,10 @@ class MainWindow(QMainWindow):
         self._capture_completed = True
         self.source_path = ""
         self.icon_path = ""
+        self.developer_path = ""
         self.source_card.clear_path()
         self.icon_card.clear_path()
+        self.developer_card.clear_path()
         self.capture_button.setText("✓ 本次取证边界已记录")
         self.capture_button.setEnabled(False)
         if screenshot_count and recording_count:
@@ -2272,13 +2320,19 @@ class MainWindow(QMainWindow):
         icon_ready = any(
             path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES for path in paths
         )
+        developer_ready = any(
+            path.is_file() and path.suffix.lower() in SUPPORTED_DEVELOPER_FILES
+            for path in paths
+        )
         self.source_card._set_visual_state("dragActive", source_ready)
         self.icon_card._set_visual_state("dragActive", icon_ready)
-        return source_ready or icon_ready
+        self.developer_card._set_visual_state("dragActive", developer_ready)
+        return source_ready or icon_ready or developer_ready
 
     def _clear_drop_highlights(self) -> None:
         self.source_card._set_visual_state("dragActive", False)
         self.icon_card._set_visual_state("dragActive", False)
+        self.developer_card._set_visual_state("dragActive", False)
 
     def _route_dropped_paths(self, paths: list[Path]) -> bool:
         source = next(
@@ -2289,11 +2343,21 @@ class MainWindow(QMainWindow):
             (path for path in paths if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES),
             None,
         )
+        developer = next(
+            (
+                path
+                for path in paths
+                if path.is_file() and path.suffix.lower() in SUPPORTED_DEVELOPER_FILES
+            ),
+            None,
+        )
         if source:
             self.source_card.set_path(str(source))
         if icon:
             self.icon_card.set_path(str(icon))
-        return source is not None or icon is not None
+        if developer:
+            self.developer_card.set_path(str(developer))
+        return source is not None or icon is not None or developer is not None
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if event.type() in {QEvent.Type.DragEnter, QEvent.Type.DragMove}:

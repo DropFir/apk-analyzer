@@ -213,11 +213,19 @@ def test_full_window_drop_routes_apkm_and_image_together(
     monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
     source = tmp_path / "Sample App.apkm"
     icon = tmp_path / "Sample App.webp"
+    developer = tmp_path / "developer.txt"
     source.write_bytes(b"fixture")
     icon.write_bytes(b"fixture")
+    developer.write_text("SEGA\n", encoding="utf-8")
     window = MainWindow()
     mime_data = QMimeData()
-    mime_data.setUrls([QUrl.fromLocalFile(str(icon)), QUrl.fromLocalFile(str(source))])
+    mime_data.setUrls(
+        [
+            QUrl.fromLocalFile(str(icon)),
+            QUrl.fromLocalFile(str(source)),
+            QUrl.fromLocalFile(str(developer)),
+        ]
+    )
     enter_event = QDragEnterEvent(
         QPoint(10, 10),
         Qt.DropAction.CopyAction,
@@ -240,8 +248,10 @@ def test_full_window_drop_routes_apkm_and_image_together(
     assert event.isAccepted() is True
     assert window.source_path == str(source.resolve())
     assert window.icon_path == str(icon.resolve())
+    assert window.developer_path == str(developer.resolve())
     assert window.source_card.file_name_label.text() == source.name
     assert window.icon_card.file_name_label.text() == icon.name
+    assert window.developer_card.file_name_label.text() == developer.name
     window.close()
 
 

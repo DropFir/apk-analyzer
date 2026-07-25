@@ -80,6 +80,7 @@ def make_finish_bundle(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
             "selected_splits": [],
         },
         "icon": {"path": str(icon), "file_name": icon.name},
+        "developer": None,
         "app": {
             "package_name": "com.example.app",
             "application_label": "Example",
@@ -199,6 +200,40 @@ def test_finalize_builds_and_validates_schema3_package(tmp_path: Path) -> None:
     assert (package / "videos" / "raw_install_test.mp4").is_file()
     assert not (bundle / ".apkba-pending-session.json").exists()
     assert all(serial == "PHONE-FINISH" for serial, _arguments in adb.calls)
+
+
+def test_finalize_carries_optional_developer_text_into_evidence(tmp_path: Path) -> None:
+    bundle, remote_files = make_finish_bundle(tmp_path)
+    developer = bundle / "developer.txt"
+    developer.write_text("SEGA\n", encoding="utf-8")
+    pending_path = bundle / ".apkba-pending-session.json"
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending["developer"] = {
+        "name": "SEGA",
+        "source": "operator_provided_text_file",
+        "path": str(developer),
+        "file_name": developer.name,
+        "sha256": _hash_file(developer),
+    }
+    pending["app"]["developer_name"] = "SEGA"
+    pending["app"]["developer_source"] = "operator_provided_text_file"
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+
+    result = finalize_evidence(
+        bundle,
+        ["/sdcard/DCIM/Screenshots/Screenshot_Example.png"],
+        "/sdcard/DCIM/Screen recordings/Example.mp4",
+        content_visibility="visible",
+        review_method="operator_confirmed_playback",
+        output_root=tmp_path / "developer-output",
+        adb=FakeFinishAdb(remote_files),
+    )
+
+    package = Path(result["packagePath"])
+    observations = json.loads((package / "observations.json").read_text(encoding="utf-8"))
+    assert (package / "developer.txt").read_text(encoding="utf-8").strip() == "SEGA"
+    assert observations["developer"]["name"] == "SEGA"
+    assert observations["app"]["developer_name"] == "SEGA"
 
 
 def test_protected_operator_report_requires_protected_classification_and_frames(

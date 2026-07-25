@@ -20,6 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     scan = subparsers.add_parser("scan", help="scan and create an Agent1 intake folder")
     scan.add_argument("--source", required=True, type=Path)
     scan.add_argument("--icon", required=True, type=Path)
+    scan.add_argument("--developer", type=Path)
     scan.add_argument("--output", required=True, type=Path)
     scan.add_argument("--profile", choices=("standard", "quick"), default="standard")
     scan.add_argument("--report-only", action="store_true")
@@ -28,6 +29,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     prepare.add_argument("--source", required=True, type=Path)
     prepare.add_argument("--icon", required=True, type=Path)
+    prepare.add_argument("--developer", type=Path)
     prepare.add_argument("--output", required=True, type=Path)
     prepare.add_argument("--serial", required=True)
     prepare.add_argument(
@@ -103,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.icon,
                 args.output,
                 args.serial,
+                developer_path=args.developer,
                 confirm_low_target_sdk=(
                     (lambda _details: True) if args.allow_low_target_sdk_bypass else None
                 ),
@@ -150,7 +153,13 @@ def main(argv: list[str] | None = None) -> int:
         payload: dict[str, object] = {"report": report}
         if report["status"] != "blocked" and not args.report_only:
             payload["bundlePath"] = str(
-                create_intake_bundle(report, args.source, args.icon, args.output)
+                create_intake_bundle(
+                    report,
+                    args.source,
+                    args.icon,
+                    args.output,
+                    developer_path=args.developer,
+                )
             )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2 if report["status"] == "blocked" else 0

@@ -502,6 +502,17 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
     copied_hash = _hash_file(sources[0]).upper()
     if copied_hash != expected_source_hash.upper():
         raise ScanFailure("证据包内源安装包 SHA-256 不匹配。")
+    developer = observations.get("developer")
+    if isinstance(developer, dict) and developer.get("name"):
+        developer_path = package / str(developer.get("package_path") or "")
+        expected_developer_hash = str(developer.get("sha256") or "")
+        if (
+            not developer_path.is_file()
+            or not _is_direct_child(developer_path, package)
+            or not expected_developer_hash
+            or _hash_file(developer_path).upper() != expected_developer_hash.upper()
+        ):
+            raise ScanFailure("证据包内开发者信息文件缺失或 SHA-256 不匹配。")
     media = observations.get("media") or {}
     if int(media.get("screenshot_count") or 0) != len(screenshots):
         raise ScanFailure("截图记录数量与实际文件不一致。")
@@ -600,6 +611,22 @@ def finalize_evidence(
         (session.get("icon") or {}).get("path"),
         str((session.get("icon") or {}).get("file_name") or ""),
     )
+    developer_session = session.get("developer")
+    developer_file = None
+    if isinstance(developer_session, dict) and developer_session.get("name"):
+        developer_file = _session_path(
+            bundle_path,
+            developer_session.get("path"),
+            str(developer_session.get("file_name") or ""),
+        )
+        expected_developer_hash = str(developer_session.get("sha256") or "")
+        if (
+            not developer_file.is_file()
+            or not _is_direct_child(developer_file, bundle_path)
+            or not expected_developer_hash
+            or _hash_file(developer_file).upper() != expected_developer_hash.upper()
+        ):
+            raise ScanFailure("交接包中的开发者信息文件缺失或 SHA-256 校验失败。")
     if not source.is_file() or not icon.is_file():
         raise ScanFailure("交接包中的源安装包或图标已丢失。")
     expected_hash = str((session.get("source") or {}).get("sha256") or "")
@@ -707,6 +734,10 @@ def finalize_evidence(
         copied_icon = staging / f"icon{icon.suffix.lower()}"
         shutil.copy2(source, copied_source)
         shutil.copy2(icon, copied_icon)
+        copied_developer = None
+        if developer_file:
+            copied_developer = staging / "developer.txt"
+            shutil.copy2(developer_file, copied_developer)
         media_elapsed = round((time.monotonic() - media_started) * 1000)
 
         record_started = time.monotonic()
@@ -739,7 +770,19 @@ def finalize_evidence(
                 "target_sdk": app.get("target_sdk"),
                 "launch_activity": app.get("launch_activity"),
                 "declared_permissions": list(app.get("declared_permissions") or []),
+                "developer_name": app.get("developer_name"),
+                "developer_source": app.get("developer_source"),
             },
+            "developer": (
+                {
+                    "name": developer_session.get("name"),
+                    "source": developer_session.get("source"),
+                    "sha256": _hash_file(copied_developer).upper(),
+                    "package_path": copied_developer.name,
+                }
+                if copied_developer and isinstance(developer_session, dict)
+                else None
+            ),
             "source": {
                 "file_name": source.name,
                 "format": (session.get("source") or {}).get("format"),

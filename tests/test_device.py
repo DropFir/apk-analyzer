@@ -18,6 +18,7 @@ from apkba_analyzer.device import (
     select_xapk_splits,
 )
 from apkba_analyzer.models import ScanFailure
+from apkba_analyzer.scanner import _hash_file
 
 
 def completed(stdout: str = "", returncode: int = 0, stderr: str = ""):
@@ -359,6 +360,33 @@ def test_prepare_blocks_incompatible_native_abi_before_install_or_phone_write(
 
     assert adb.calls == []
     assert not (bundle / ".apkba-pending-session.json").exists()
+
+
+def test_prepare_carries_optional_developer_into_pending_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    developer = bundle / "developer.txt"
+    developer.write_text("SEGA\n", encoding="utf-8")
+    handoff_path = bundle / "agent1_handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["developer"] = {
+        "name": "SEGA",
+        "source": "operator_provided_text_file",
+        "path": developer.name,
+        "sha256": _hash_file(developer),
+    }
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    prepare_bundle(report, bundle, "PHONE-DEV", adb=FakePrepareAdb())
+
+    pending = json.loads((bundle / ".apkba-pending-session.json").read_text(encoding="utf-8"))
+    assert pending["developer"]["name"] == "SEGA"
+    assert pending["developer"]["file_name"] == "developer.txt"
+    assert pending["app"]["developer_name"] == "SEGA"
+    assert pending["app"]["developer_source"] == "operator_provided_text_file"
 
 
 def test_low_target_sdk_requirement_matches_android_15_install_policy() -> None:

@@ -15,6 +15,10 @@ from typing import Any
 from apkba_analyzer.models import ScanFailure
 from apkba_analyzer.scanner import _hash_file
 
+SUPPORTED_DEVELOPER_FILES = {".txt"}
+MAX_DEVELOPER_FILE_BYTES = 16 * 1024
+MAX_DEVELOPER_NAME_LENGTH = 200
+
 
 def _portable_name(value: str, fallback: str) -> str:
     value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" ._")
@@ -35,11 +39,30 @@ def _unique_destination(root: Path, base_name: str) -> Path:
     raise ScanFailure("无法为交接包分配唯一目录名。")
 
 
+def _read_developer_name(path: Path) -> str:
+    if path.suffix.lower() not in SUPPORTED_DEVELOPER_FILES:
+        raise ScanFailure("开发者信息必须是 .txt 文件。")
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_DEVELOPER_FILE_BYTES:
+        raise ScanFailure("开发者信息文件必须为非空且不超过 16 KB。")
+    try:
+        value = " ".join(path.read_text(encoding="utf-8-sig").split())
+    except UnicodeDecodeError as error:
+        raise ScanFailure("开发者信息文件必须使用 UTF-8 编码。") from error
+    if not value:
+        raise ScanFailure("开发者信息文件没有可用内容。")
+    if len(value) > MAX_DEVELOPER_NAME_LENGTH:
+        raise ScanFailure("开发者名称不能超过 200 个字符。")
+    return value
+
+
 def _summary_html(report: dict[str, Any]) -> str:
     app = report.get("app") or {}
+    developer = report.get("developer") or {}
     rows = [
         ("状态", report.get("status")),
         ("应用", app.get("applicationLabel")),
+        ("开发者（编辑提供）", developer.get("name")),
         ("包名", app.get("packageName")),
         ("版本", app.get("versionName")),
         ("Version code", app.get("versionCode")),
@@ -86,6 +109,8 @@ def create_intake_bundle(
     source_path: str | os.PathLike[str],
     icon_path: str | os.PathLike[str],
     output_root: str | os.PathLike[str],
+    *,
+    developer_path: str | os.PathLike[str] | None = None,
 ) -> Path:
     """Copy verified inputs and reports into an atomic, portable intake folder."""
 
@@ -93,6 +118,8 @@ def create_intake_bundle(
         raise ScanFailure("扫描存在阻塞项，未生成 Agent1 交接包。")
     source = Path(source_path).resolve()
     icon = Path(icon_path).resolve()
+    developer_file = Path(developer_path).resolve() if developer_path else None
+    developer_name = _read_developer_name(developer_file) if developer_file else None
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     app = report.get("app") or {}
@@ -112,19 +139,32 @@ def create_intake_bundle(
         portable_source_name = _portable_name(source.stem, "source") + portable_suffix
         source_destination = staging / portable_source_name
         icon_destination = staging / f"icon{icon.suffix.lower()}"
+        developer_destination = staging / "developer.txt" if developer_file else None
         shutil.copy2(source, source_destination)
         shutil.copy2(icon, icon_destination)
+        if developer_file and developer_destination:
+            shutil.copy2(developer_file, developer_destination)
         expected_source = (report.get("source") or {}).get("sha256")
         expected_icon = (report.get("icon") or {}).get("sha256")
         if _hash_file(source_destination) != expected_source:
             raise ScanFailure("交接包内源文件 SHA-256 与扫描结果不一致。")
         if _hash_file(icon_destination) != expected_icon:
             raise ScanFailure("交接包内图标 SHA-256 与扫描结果不一致。")
+        developer_record = None
+        if developer_destination and developer_name:
+            developer_record = {
+                "name": developer_name,
+                "source": "operator_provided_text_file",
+                "path": developer_destination.name,
+                "sha256": _hash_file(developer_destination),
+            }
 
         portable_report = json.loads(json.dumps(report))
+        portable_report["developer"] = developer_record
         portable_report["bundle"] = {
             "sourcePath": source_destination.name,
             "iconPath": icon_destination.name,
+            "developerPath": developer_destination.name if developer_destination else None,
             "reportPath": "scan_report.json",
             "handoffPath": "agent1_handoff.json",
         }
@@ -138,6 +178,7 @@ def create_intake_bundle(
                 "format": (report.get("source") or {}).get("format"),
             },
             "icon": {"path": icon_destination.name, "sha256": expected_icon},
+            "developer": developer_record,
             "verifiedFacts": {
                 "app": report.get("app"),
                 "signature": report.get("signature"),
@@ -160,7 +201,7 @@ def create_intake_bundle(
         (staging / "README.txt").write_text(
             "APKBA Agent1 intake bundle\n\n"
             "This folder contains one original APK/XAPK, one validated icon, "
-            "and the offline scan records.\n"
+            "optional editor-provided developer information, and the offline scan records.\n"
             "Point Agent1 at this folder. Agent1 still performs installation, launch, "
             "manual media collection, and final evidence validation.\n",
             encoding="utf-8",

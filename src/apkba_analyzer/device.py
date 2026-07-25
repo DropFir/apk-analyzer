@@ -26,6 +26,9 @@ from apkba_analyzer.tools import _subprocess_creation_flags
 SCREENSHOT_DIRECTORY = "/sdcard/DCIM/Screenshots"
 RECORDING_DIRECTORY = "/sdcard/DCIM/Screen recordings"
 PENDING_FILE_NAME = ".apkba-pending-session.json"
+LEANBACK_FEATURE = "android.software.leanback"
+PHONE_LAUNCHER_CATEGORY = "android.intent.category.LAUNCHER"
+LEANBACK_LAUNCHER_CATEGORY = "android.intent.category.LEANBACK_LAUNCHER"
 SYSTEM_MANAGED_ENTRYPOINTS = {
     "com.google.android.apps.healthdata": {
         "action": "android.health.connect.action.HEALTH_HOME_SETTINGS",
@@ -218,16 +221,36 @@ class AdbClient:
                     supported_abis.append(abi)
         density_text = properties.get("ro.sf.lcd_density", "")
         density = int(density_text) if density_text.isdigit() else 0
+        feature_result = self.invoke(
+            ["shell", "pm", "list", "features"],
+            serial=serial,
+            allow_failure=True,
+            timeout=30,
+        )
+        features = (
+            sorted(
+                {
+                    line.partition(":")[2].strip()
+                    for line in feature_result.stdout.splitlines()
+                    if line.startswith("feature:") and line.partition(":")[2].strip()
+                }
+            )
+            if feature_result.returncode == 0
+            else None
+        )
         return {
             "serial": serial,
             "state": "device",
             "model": properties.get("ro.product.model", ""),
             "android_release": properties.get("ro.build.version.release", ""),
+            "characteristics": properties.get("ro.build.characteristics", ""),
             "abi": properties.get("ro.product.cpu.abi", ""),
             "supported_abis": supported_abis,
             "sdk": properties.get("ro.build.version.sdk", ""),
             "locale": properties.get("persist.sys.locale", ""),
             "density_dpi": density,
+            "features": features,
+            "features_known": features is not None,
         }
 
     def focused_activity(self, serial: str) -> str | None:
@@ -453,6 +476,43 @@ def ensure_native_abi_compatible(report: dict[str, Any], device: dict[str, Any])
             f"手机 ABI：{device_text}\n"
             "请换用包含 arm64-v8a/armeabi-v7a 的版本，或改用兼容的测试设备。"
         )
+
+
+def ensure_device_profile_compatible(
+    report: dict[str, Any], device: dict[str, Any]
+) -> None:
+    """Reject TV-only packages on devices that do not expose Android TV support."""
+
+    app = report.get("app") or {}
+    required_features = {
+        str(value).strip()
+        for value in app.get("requiredFeatures") or []
+        if str(value).strip()
+    }
+    tv_only = (
+        app.get("launcherCategory") == LEANBACK_LAUNCHER_CATEGORY
+        or LEANBACK_FEATURE in required_features
+    )
+    if not tv_only or not device.get("features_known"):
+        return
+
+    device_features = {
+        str(value).strip()
+        for value in device.get("features") or []
+        if str(value).strip()
+    }
+    if LEANBACK_FEATURE in device_features:
+        return
+
+    model = str(device.get("model") or "当前设备")
+    raise ScanFailure(
+        "该安装包是 Android TV（Leanback）专用应用，当前设备不兼容，"
+        "已在安装前停止。\n"
+        f"目标设备：{model}\n"
+        f"应用启动入口：{app.get('launcherActivity') or '未确认'}\n"
+        "要求设备功能：android.software.leanback\n"
+        "请改用 Android TV / Google TV 测试设备，或下载该应用的手机版本。"
+    )
 
 
 def _extract_splits(source: Path, selected: list[str], destination: Path) -> list[Path]:
@@ -709,6 +769,7 @@ def prepare_bundle(
     started = _iso_now()
     device = device or client.device_facts(serial)
     ensure_native_abi_compatible(report, device)
+    ensure_device_profile_compatible(report, device)
     installed = client.invoke(
         ["shell", "pm", "path", package_name],
         serial=serial,
@@ -765,6 +826,9 @@ def prepare_bundle(
     _progress(progress, 86, "启动应用并检查前台页面…")
     launch_started = _iso_now()
     component = _launch_component(package_name, app.get("launcherActivity"))
+    launcher_category = str(
+        app.get("launcherCategory") or PHONE_LAUNCHER_CATEGORY
+    )
     system_entry = SYSTEM_MANAGED_ENTRYPOINTS.get(package_name)
     fallback_used = False
     if component:
@@ -803,7 +867,7 @@ def prepare_bundle(
                 "-p",
                 package_name,
                 "-c",
-                "android.intent.category.LAUNCHER",
+                launcher_category,
                 "1",
             ],
             serial=serial,
@@ -821,7 +885,7 @@ def prepare_bundle(
                 "-p",
                 package_name,
                 "-c",
-                "android.intent.category.LAUNCHER",
+                launcher_category,
                 "1",
             ],
             serial=serial,
@@ -860,6 +924,7 @@ def prepare_bundle(
         "status": launch_result,
         "method": launch_method,
         "component": component,
+        "category": launcher_category,
         "primary_exit_code": primary.returncode,
         "final_exit_code": final.returncode,
         "fallback_used": fallback_used,
@@ -908,6 +973,7 @@ def prepare_bundle(
             "min_sdk": app.get("minSdk"),
             "target_sdk": app.get("targetSdk"),
             "launch_activity": app.get("launcherActivity"),
+            "launch_category": launcher_category,
             "declared_permissions": list(app.get("permissions") or []),
             "developer_name": (developer or {}).get("name"),
             "developer_source": (developer or {}).get("source"),
@@ -923,6 +989,7 @@ def prepare_bundle(
             "supported_abis": device.get("supported_abis"),
             "sdk": device.get("sdk"),
             "locale": device.get("locale"),
+            "features": device.get("features"),
         },
         "install": {
             "result": "success",
@@ -936,6 +1003,7 @@ def prepare_bundle(
             "result": launch_result,
             "method": launch_method,
             "component": component,
+            "category": launcher_category,
             "primary_exit_code": primary.returncode,
             "final_exit_code": final.returncode,
             "fallback_used": fallback_used,
@@ -1012,6 +1080,7 @@ def scan_create_and_prepare(
         client = adb or AdbClient()
         _progress(progress, 63, "确认手机系统与目标 SDK 兼容性…")
         device = client.device_facts(serial)
+        ensure_device_profile_compatible(report, device)
         low_target_requirement = low_target_sdk_install_requirement(report, device)
         low_target_sdk_bypass = None
         if low_target_requirement is not None:

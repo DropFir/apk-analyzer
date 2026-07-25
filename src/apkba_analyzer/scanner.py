@@ -24,6 +24,8 @@ from apkba_analyzer.tools import find_apkanalyzer, find_apksigner, run_tool
 
 Progress = Callable[[int, str], None]
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
+PHONE_LAUNCHER_CATEGORY = "android.intent.category.LAUNCHER"
+LEANBACK_LAUNCHER_CATEGORY = "android.intent.category.LEANBACK_LAUNCHER"
 SUPPORTED_SOURCES = {".apk", ".xapk", ".apkm"}
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
@@ -241,16 +243,7 @@ def _manifest_boolean(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "0xffffffff"}
 
 
-def _parse_manifest_xml(text: str) -> dict[str, Any]:
-    start = text.find("<manifest")
-    if start < 0:
-        raise ScanFailure("解析器输出中没有找到 Android manifest。")
-    text = text[start:]
-    try:
-        root = ElementTree.fromstring(text)
-    except ElementTree.ParseError as error:
-        raise ScanFailure(f"Android manifest XML 无法解析：{error}") from error
-
+def _parse_manifest_root(root: Any) -> dict[str, Any]:
     application = root.find("application")
     uses_sdk = root.find("uses-sdk")
     required_split_types = _split_types(_android_attribute(root, "requiredSplitTypes"))
@@ -269,25 +262,45 @@ def _parse_manifest_xml(text: str) -> dict[str, Any]:
             if (value := _android_attribute(node, "name"))
         }
     )
+    required_features = sorted(
+        {
+            name
+            for node in root.findall("uses-feature")
+            if (name := _android_attribute(node, "name"))
+            and (
+                (required := _android_attribute(node, "required")) is None
+                or _manifest_boolean(required)
+            )
+        }
+    )
     launcher: ElementTree.Element | None = None
     launcher_type: str | None = None
+    launcher_category: str | None = None
     if application is not None:
-        for component_type in ("activity", "activity-alias"):
-            for component in application.findall(component_type):
-                for intent_filter in component.findall("intent-filter"):
-                    actions = {
-                        _android_attribute(node, "name") for node in intent_filter.findall("action")
-                    }
-                    categories = {
-                        _android_attribute(node, "name")
-                        for node in intent_filter.findall("category")
-                    }
-                    if (
-                        "android.intent.action.MAIN" in actions
-                        and "android.intent.category.LAUNCHER" in categories
-                    ):
-                        launcher = component
-                        launcher_type = component_type
+        for desired_category in (
+            PHONE_LAUNCHER_CATEGORY,
+            LEANBACK_LAUNCHER_CATEGORY,
+        ):
+            for component_type in ("activity", "activity-alias"):
+                for component in application.findall(component_type):
+                    for intent_filter in component.findall("intent-filter"):
+                        actions = {
+                            _android_attribute(node, "name")
+                            for node in intent_filter.findall("action")
+                        }
+                        categories = {
+                            _android_attribute(node, "name")
+                            for node in intent_filter.findall("category")
+                        }
+                        if (
+                            "android.intent.action.MAIN" in actions
+                            and desired_category in categories
+                        ):
+                            launcher = component
+                            launcher_type = component_type
+                            launcher_category = desired_category
+                            break
+                    if launcher is not None:
                         break
                 if launcher is not None:
                     break
@@ -305,10 +318,24 @@ def _parse_manifest_xml(text: str) -> dict[str, Any]:
         "launcherActivity": _android_attribute(launcher, "name"),
         "launcherTargetActivity": _android_attribute(launcher, "targetActivity"),
         "launcherNodeType": launcher_type,
+        "launcherCategory": launcher_category,
+        "requiredFeatures": required_features,
         "splitName": root.attrib.get("split") or None,
         "requiredSplitTypes": required_split_types,
         "splitRequired": splits_required,
     }
+
+
+def _parse_manifest_xml(text: str) -> dict[str, Any]:
+    start = text.find("<manifest")
+    if start < 0:
+        raise ScanFailure("解析器输出中没有找到 Android manifest。")
+    text = text[start:]
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError as error:
+        raise ScanFailure(f"Android manifest XML 无法解析：{error}") from error
+    return _parse_manifest_root(root)
 
 
 def _plain_manifest_from_archive(path: Path) -> dict[str, Any] | None:
@@ -366,31 +393,19 @@ def _manifest_with_androguard(path: Path) -> dict[str, Any]:
     try:
         logger.disable("androguard")
         apk = APK(str(path))
-        required_split_types = _split_types(
-            apk.get_attribute_value("manifest", "requiredSplitTypes")
+        manifest = _parse_manifest_root(apk.get_android_manifest_xml())
+        manifest.update(
+            {
+                "applicationLabel": apk.get_app_name() or None,
+                "packageName": apk.get_package() or None,
+                "versionName": apk.get_androidversion_name() or None,
+                "versionCode": _number_or_text(apk.get_androidversion_code()),
+                "minSdk": _number_or_text(apk.get_min_sdk_version()),
+                "targetSdk": _number_or_text(apk.get_target_sdk_version()),
+                "permissions": sorted(set(apk.get_permissions() or [])),
+            }
         )
-        splits_required = bool(required_split_types) or _manifest_boolean(
-            apk.get_attribute_value(
-                "meta-data",
-                "value",
-                name="com.android.vending.splits.required",
-            )
-        )
-        return {
-            "applicationLabel": apk.get_app_name() or None,
-            "packageName": apk.get_package() or None,
-            "versionName": apk.get_androidversion_name() or None,
-            "versionCode": _number_or_text(apk.get_androidversion_code()),
-            "minSdk": _number_or_text(apk.get_min_sdk_version()),
-            "targetSdk": _number_or_text(apk.get_target_sdk_version()),
-            "permissions": sorted(set(apk.get_permissions() or [])),
-            "launcherActivity": apk.get_main_activity() or None,
-            "launcherTargetActivity": None,
-            "launcherNodeType": "activity" if apk.get_main_activity() else None,
-            "splitName": apk.get_attribute_value("manifest", "split") or None,
-            "requiredSplitTypes": required_split_types,
-            "splitRequired": splits_required,
-        }
+        return manifest
     except Exception as error:  # Androguard exposes parser-specific exception types.
         raise ScanFailure(f"Androguard 解析失败：{error}") from error
 
@@ -1038,7 +1053,16 @@ def scan_package(
         findings.append(
             Finding("warning", "manifest.version_code_missing", "未能读取 versionCode。")
         )
-    if not app.get("launcherActivity"):
+    if app.get("launcherCategory") == LEANBACK_LAUNCHER_CATEGORY:
+        findings.append(
+            Finding(
+                "warning",
+                "manifest.leanback_launcher_only",
+                "该应用仅声明 Android TV（Leanback）启动入口；普通手机不兼容。",
+                f"launcherActivity={app.get('launcherActivity')}",
+            )
+        )
+    elif not app.get("launcherActivity"):
         findings.append(
             Finding("warning", "manifest.launcher_missing", "未找到可确认的 LAUNCHER activity。")
         )

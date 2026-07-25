@@ -20,6 +20,8 @@
 
 对于没有桌面 LAUNCHER、由系统设置承载界面的 Health Connect，工具使用 Android 的 Health Connect 设置 Action 打开页面，并在系统控制器确实位于前台时记录 `success_system_settings_entry`；不会把任意系统页面误记为安装包自己的 Activity。
 
+对于只声明 `LEANBACK_LAUNCHER`、要求 `android.software.leanback` 的 Android TV 应用，静态报告会明确标记为电视专用包。连接设备后，工具会读取设备功能列表；普通手机缺少 Leanback 时会在创建交接包和安装之前停止，并提示改用 Android TV / Google TV 或手机版安装包。兼容的电视设备仍会使用 Leanback 入口继续启动。
+
 ## 编辑使用
 
 Windows 双击 `dist\APKBA-Analyzer.exe` 单文件发布版，macOS 打开 `APKBA-Analyzer.app`：

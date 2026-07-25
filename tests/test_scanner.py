@@ -39,6 +39,22 @@ REQUIRED_SPLIT_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
   </application>
 </manifest>"""
 
+TV_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.tv" android:versionName="1.0" android:versionCode="1">
+  <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="35" />
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+  <uses-feature android:name="android.software.leanback" android:required="true" />
+  <application android:label="TV Fixture">
+    <activity android:name=".TvActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>"""
+
 
 def make_apk(path: Path, manifest: str = MANIFEST) -> None:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -65,6 +81,30 @@ def test_apk_scan_extracts_agent1_static_facts(tmp_path: Path) -> None:
     assert report["app"]["launcherActivity"] == ".MainActivity"
     assert report["icon"]["square"] is True
     assert report["tools"]["manifestParser"] == "plain_xml_fixture"
+
+
+def test_apk_scan_recognizes_tv_only_leanback_launcher(tmp_path: Path) -> None:
+    source = tmp_path / "tv.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source, TV_MANIFEST)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "warning"
+    assert report["app"]["launcherActivity"] == ".TvActivity"
+    assert (
+        report["app"]["launcherCategory"]
+        == "android.intent.category.LEANBACK_LAUNCHER"
+    )
+    assert report["app"]["requiredFeatures"] == ["android.software.leanback"]
+    assert any(
+        item["code"] == "manifest.leanback_launcher_only"
+        for item in report["findings"]
+    )
+    assert not any(
+        item["code"] == "manifest.launcher_missing" for item in report["findings"]
+    )
 
 
 def test_apk_scan_inventories_embedded_native_abis(tmp_path: Path) -> None:

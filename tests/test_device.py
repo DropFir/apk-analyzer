@@ -11,6 +11,7 @@ from apkba_analyzer.device import (
     AdbClient,
     abandon_capture_session,
     device_session_lock,
+    ensure_device_profile_compatible,
     ensure_native_abi_compatible,
     low_target_sdk_install_requirement,
     prepare_bundle,
@@ -171,6 +172,35 @@ def test_native_abi_check_accepts_matching_or_managed_only_apk() -> None:
     ensure_native_abi_compatible(
         {"app": {"nativeCode": {"libraryCount": 0, "abis": []}}},
         {"supported_abis": ["arm64-v8a"]},
+    )
+
+
+def test_device_profile_check_rejects_tv_only_app_on_phone() -> None:
+    report = {
+        "app": {
+            "launcherActivity": "com.example.tv.MainActivity",
+            "launcherCategory": "android.intent.category.LEANBACK_LAUNCHER",
+            "requiredFeatures": ["android.software.leanback"],
+        }
+    }
+
+    with pytest.raises(ScanFailure, match="Android TV（Leanback）专用应用"):
+        ensure_device_profile_compatible(
+            report,
+            {
+                "model": "Test Phone",
+                "features_known": True,
+                "features": ["android.hardware.touchscreen"],
+            },
+        )
+
+    ensure_device_profile_compatible(
+        report,
+        {
+            "model": "Test TV",
+            "features_known": True,
+            "features": ["android.software.leanback"],
+        },
     )
 
 
@@ -369,6 +399,30 @@ def test_prepare_blocks_incompatible_native_abi_before_install_or_phone_write(
 
     with pytest.raises(ScanFailure, match="安装包原生库与目标手机 CPU 架构不兼容"):
         prepare_bundle(report, bundle, "PHONE-ARM", adb=adb, device=device)
+
+    assert adb.calls == []
+    assert not (bundle / ".apkba-pending-session.json").exists()
+
+
+def test_prepare_blocks_tv_only_app_on_phone_before_install_or_phone_write(
+    tmp_path: Path,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["app"].update(
+        {
+            "launcherCategory": "android.intent.category.LEANBACK_LAUNCHER",
+            "requiredFeatures": ["android.software.leanback"],
+        }
+    )
+    adb = FakePrepareAdb()
+    device = {
+        **adb.device_facts("PHONE-NOT-TV"),
+        "features_known": True,
+        "features": ["android.hardware.touchscreen"],
+    }
+
+    with pytest.raises(ScanFailure, match="当前设备不兼容"):
+        prepare_bundle(report, bundle, "PHONE-NOT-TV", adb=adb, device=device)
 
     assert adb.calls == []
     assert not (bundle / ".apkba-pending-session.json").exists()

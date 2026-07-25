@@ -31,6 +31,16 @@ MAX_XAPK_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 20_000
 MAX_UNCOMPRESSED_BYTES = 12 * 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 1_000
+KNOWN_ANDROID_ABIS = {
+    "arm64-v8a",
+    "armeabi",
+    "armeabi-v7a",
+    "mips",
+    "mips64",
+    "riscv64",
+    "x86",
+    "x86_64",
+}
 
 
 def _progress(callback: Progress | None, value: int, message: str) -> None:
@@ -168,6 +178,43 @@ def _archive_audit(path: Path, deep: bool, findings: list[Finding]) -> dict[str,
     except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         findings.append(Finding("error", "archive.read_failed", f"无法读取压缩包：{error}"))
         return {}
+
+
+def _native_code_record(path: Path, findings: list[Finding]) -> dict[str, Any]:
+    """Inventory packaged native libraries without extracting or loading them."""
+
+    abis: set[str] = set()
+    unknown_directories: set[str] = set()
+    library_count = 0
+    with zipfile.ZipFile(path) as archive:
+        for info in archive.infolist():
+            name = info.filename.replace("\\", "/")
+            if info.is_dir() or not _safe_member_name(info.filename):
+                continue
+            parts = PurePosixPath(name).parts
+            if len(parts) < 3 or parts[0] != "lib" or not name.lower().endswith(".so"):
+                continue
+            library_count += 1
+            abi = parts[1].lower()
+            if abi in KNOWN_ANDROID_ABIS:
+                abis.add(abi)
+            else:
+                unknown_directories.add(parts[1])
+
+    if unknown_directories:
+        findings.append(
+            Finding(
+                "warning",
+                "native_code.unknown_abi_directories",
+                "安装包含有无法识别 CPU 架构的原生库目录；安装前无法完整确认兼容性。",
+                ", ".join(sorted(unknown_directories)),
+            )
+        )
+    return {
+        "libraryCount": library_count,
+        "abis": sorted(abis),
+        "unknownAbiDirectories": sorted(unknown_directories),
+    }
 
 
 def _android_attribute(node: ElementTree.Element | None, name: str) -> str | None:
@@ -648,6 +695,7 @@ def _read_xapk(
                 shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
             _progress(progress, 52, "解析 base APK manifest…")
             app, parser_name = _parse_apk_manifest(base_path, apkanalyzer, findings)
+            app["nativeCode"] = _native_code_record(base_path, findings)
 
             _progress(progress, 66, "验证 XAPK split 签名…")
             signature_record = _verify_split_signatures(
@@ -787,6 +835,7 @@ def _read_apkm(
                 shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
             _progress(progress, 52, "解析 APKM base APK manifest…")
             app, parser_name = _parse_apk_manifest(base_path, apkanalyzer, findings)
+            app["nativeCode"] = _native_code_record(base_path, findings)
             _progress(progress, 66, "验证 APKM split 签名…")
             signature_record = _verify_split_signatures(
                 archive,
@@ -914,6 +963,7 @@ def scan_package(
             if source_format == "apk":
                 _progress(progress, 50, "解析 APK manifest…")
                 app, parser_name = _parse_apk_manifest(source, apkanalyzer, findings)
+                app["nativeCode"] = _native_code_record(source, findings)
                 if app.get("splitRequired"):
                     required_split_types = list(app.get("requiredSplitTypes") or [])
                     labels = {

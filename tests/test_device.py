@@ -10,6 +10,7 @@ import pytest
 from apkba_analyzer.device import (
     AdbClient,
     device_session_lock,
+    ensure_native_abi_compatible,
     low_target_sdk_install_requirement,
     prepare_bundle,
     record_media_capture_end,
@@ -140,6 +141,35 @@ def test_select_xapk_rejects_incompatible_abi() -> None:
             },
             {"supported_abis": ["arm64-v8a"]},
         )
+
+
+def test_native_abi_check_rejects_x86_64_apk_on_arm_phone() -> None:
+    report = {
+        "app": {
+            "nativeCode": {
+                "libraryCount": 1,
+                "abis": ["x86_64"],
+                "unknownAbiDirectories": [],
+            }
+        }
+    }
+
+    with pytest.raises(ScanFailure, match="安装包 ABI：x86_64"):
+        ensure_native_abi_compatible(
+            report,
+            {"supported_abis": ["arm64-v8a", "armeabi-v7a"]},
+        )
+
+
+def test_native_abi_check_accepts_matching_or_managed_only_apk() -> None:
+    ensure_native_abi_compatible(
+        {"app": {"nativeCode": {"libraryCount": 1, "abis": ["x86_64"]}}},
+        {"supported_abis": ["x86_64", "x86"]},
+    )
+    ensure_native_abi_compatible(
+        {"app": {"nativeCode": {"libraryCount": 0, "abis": []}}},
+        {"supported_abis": ["arm64-v8a"]},
+    )
 
 
 def test_select_apkm_matches_feature_module_configs() -> None:
@@ -310,6 +340,25 @@ def test_prepare_writes_agent1_pending_session_without_capturing_media(
     flattened = " ".join(" ".join(arguments) for _serial, arguments in adb.calls)
     assert "screencap" not in flattened
     assert "screenrecord" not in flattened
+
+
+def test_prepare_blocks_incompatible_native_abi_before_install_or_phone_write(
+    tmp_path: Path,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["app"]["nativeCode"] = {
+        "libraryCount": 1,
+        "abis": ["x86_64"],
+        "unknownAbiDirectories": [],
+    }
+    adb = FakePrepareAdb()
+    device = adb.device_facts("PHONE-ARM")
+
+    with pytest.raises(ScanFailure, match="安装包原生库与目标手机 CPU 架构不兼容"):
+        prepare_bundle(report, bundle, "PHONE-ARM", adb=adb, device=device)
+
+    assert adb.calls == []
+    assert not (bundle / ".apkba-pending-session.json").exists()
 
 
 def test_low_target_sdk_requirement_matches_android_15_install_policy() -> None:

@@ -67,6 +67,36 @@ def test_apk_scan_extracts_agent1_static_facts(tmp_path: Path) -> None:
     assert report["tools"]["manifestParser"] == "plain_xml_fixture"
 
 
+def test_apk_scan_inventories_embedded_native_abis(tmp_path: Path) -> None:
+    source = tmp_path / "native.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source)
+    with zipfile.ZipFile(source, "a", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("lib/x86_64/libfixture.so", b"not executable test data")
+        archive.writestr("lib/x86_64/libsecond.so", b"not executable test data")
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["app"]["nativeCode"] == {
+        "libraryCount": 2,
+        "abis": ["x86_64"],
+        "unknownAbiDirectories": [],
+    }
+
+
+def test_apk_scan_records_no_native_abi_for_managed_only_package(tmp_path: Path) -> None:
+    source = tmp_path / "managed.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["app"]["nativeCode"]["libraryCount"] == 0
+    assert report["app"]["nativeCode"]["abis"] == []
+
+
 def test_non_square_icon_blocks_bundle(tmp_path: Path) -> None:
     source = tmp_path / "fixture.apk"
     icon = tmp_path / "icon.png"

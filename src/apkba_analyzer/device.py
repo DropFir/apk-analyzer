@@ -414,6 +414,38 @@ def select_xapk_splits(xapk: dict[str, Any], device: dict[str, Any]) -> list[str
     return selected
 
 
+def ensure_native_abi_compatible(report: dict[str, Any], device: dict[str, Any]) -> None:
+    """Stop before installation when packaged native code cannot run on the device."""
+
+    native_code = (report.get("app") or {}).get("nativeCode") or {}
+    package_abis = {
+        str(value).strip().lower() for value in native_code.get("abis") or [] if str(value).strip()
+    }
+    if not package_abis:
+        return
+
+    device_abis = {
+        str(value).strip().lower()
+        for value in (device.get("supported_abis") or [device.get("abi")])
+        if value and str(value).strip()
+    }
+    package_text = "、".join(sorted(package_abis))
+    if not device_abis:
+        raise ScanFailure(
+            "安装包含有原生库，但未能读取目标手机支持的 CPU 架构；"
+            "为避免错误安装，已在写入手机前停止。\n"
+            f"安装包 ABI：{package_text}"
+        )
+    if package_abis.isdisjoint(device_abis):
+        device_text = "、".join(sorted(device_abis))
+        raise ScanFailure(
+            "安装包原生库与目标手机 CPU 架构不兼容，已在写入手机前停止。\n"
+            f"安装包 ABI：{package_text}\n"
+            f"手机 ABI：{device_text}\n"
+            "请换用包含 arm64-v8a/armeabi-v7a 的版本，或改用兼容的测试设备。"
+        )
+
+
 def _extract_splits(source: Path, selected: list[str], destination: Path) -> list[Path]:
     paths: list[Path] = []
     names: set[str] = set()
@@ -611,6 +643,7 @@ def prepare_bundle(
     _progress(progress, 70, "确认手机状态与兼容性…")
     started = _iso_now()
     device = device or client.device_facts(serial)
+    ensure_native_abi_compatible(report, device)
     installed = client.invoke(
         ["shell", "pm", "path", package_name],
         serial=serial,
@@ -777,6 +810,10 @@ def prepare_bundle(
             "target_sdk": app.get("targetSdk"),
             "launch_activity": app.get("launcherActivity"),
             "declared_permissions": list(app.get("permissions") or []),
+            "native_abis": list((app.get("nativeCode") or {}).get("abis") or []),
+            "native_library_count": int(
+                (app.get("nativeCode") or {}).get("libraryCount") or 0
+            ),
         },
         "device": {
             "serial": serial,

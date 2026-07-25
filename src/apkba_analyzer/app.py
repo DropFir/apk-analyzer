@@ -801,6 +801,15 @@ class PhoneImageExportDialog(QDialog):
 class MediaReviewDialog(QDialog):
     """One explicit local review replaces Agent1's filename/frame judgment."""
 
+    SCREENSHOT_COLUMNS = 3
+    SCREENSHOT_PREVIEW_SIZE = QSize(138, 230)
+    SCREENSHOT_CARD_MINIMUM_WIDTH = 154
+    SCREENSHOT_GALLERY_MINIMUM_WIDTH = (
+        SCREENSHOT_COLUMNS * SCREENSHOT_CARD_MINIMUM_WIDTH
+        + (SCREENSHOT_COLUMNS - 1) * 14
+        + 28
+    )
+
     def __init__(
         self,
         review: dict[str, object],
@@ -824,6 +833,8 @@ class MediaReviewDialog(QDialog):
 
         screenshot_group = QGroupBox("截图（逐张确认）")
         screenshot_group.setObjectName("mediaGroup")
+        screenshot_group.setMinimumWidth(self.SCREENSHOT_GALLERY_MINIMUM_WIDTH + 30)
+        self.screenshot_group = screenshot_group
         screenshot_layout = QVBoxLayout(screenshot_group)
         screenshot_hint = QLabel("点击任意缩略图可查看大图；只勾选属于本次应用的截图。")
         screenshot_hint.setObjectName("groupHint")
@@ -833,6 +844,11 @@ class MediaReviewDialog(QDialog):
         screenshot_scroll.setObjectName("mediaScroll")
         screenshot_scroll.setWidgetResizable(True)
         screenshot_scroll.setMinimumHeight(360)
+        screenshot_scroll.setMinimumWidth(self.SCREENSHOT_GALLERY_MINIMUM_WIDTH)
+        screenshot_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.screenshot_scroll = screenshot_scroll
         screenshot_content = QWidget()
         screenshot_content.setObjectName("mediaCanvas")
         screenshot_rows = QGridLayout(screenshot_content)
@@ -847,20 +863,27 @@ class MediaReviewDialog(QDialog):
             self.screenshot_checks[remote_path] = check
             card = QWidget()
             card.setObjectName("mediaCard")
+            card.setMinimumWidth(self.SCREENSHOT_CARD_MINIMUM_WIDTH)
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(4, 4, 4, 4)
             card_layout.setSpacing(7)
             local_path = str(record.get("localPath") or "")
-            preview = ClickableImageLabel(local_path, QSize(138, 230))
+            preview = ClickableImageLabel(local_path, self.SCREENSHOT_PREVIEW_SIZE)
             preview.clicked.connect(self._open_image_preview)
             self.media_previews.append(preview)
             card_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignCenter)
             card_layout.addWidget(check)
-            row_index, column_index = divmod(index, 3)
+            row_index, column_index = divmod(index, self.SCREENSHOT_COLUMNS)
             screenshot_rows.addWidget(card, row_index, column_index)
         if not screenshots:
-            screenshot_rows.addWidget(QLabel("本次边界内没有发现设备截图。"), 0, 0, 1, 3)
-        for column_index in range(3):
+            screenshot_rows.addWidget(
+                QLabel("本次边界内没有发现设备截图。"),
+                0,
+                0,
+                1,
+                self.SCREENSHOT_COLUMNS,
+            )
+        for column_index in range(self.SCREENSHOT_COLUMNS):
             screenshot_rows.setColumnStretch(column_index, 1)
         screenshot_scroll.setWidget(screenshot_content)
         screenshot_layout.addWidget(screenshot_scroll)

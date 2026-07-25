@@ -132,6 +132,51 @@ def test_media_review_checks_every_bounded_screenshot_by_default(
     dialog.close()
 
 
+def test_media_review_defaults_to_three_screenshot_columns(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    screenshots = []
+    for index in range(3):
+        path = tmp_path / f"screenshot-{index}.png"
+        pixmap = QPixmap(360, 720)
+        pixmap.fill(QColor("#087763"))
+        assert pixmap.save(str(path))
+        screenshots.append(
+            {
+                "remote_path": f"/sdcard/DCIM/Screenshots/{path.name}",
+                "file_name": path.name,
+                "localPath": str(path),
+            }
+        )
+    dialog = MediaReviewDialog(
+        {
+            "screenshots": screenshots,
+            "selectedRecording": {"file_name": "Fixture.mp4"},
+            "recordingFrames": [],
+            "visibilitySuggestion": "visible",
+        },
+        str(tmp_path),
+    )
+    dialog.show()
+    qt_app.processEvents()
+
+    screenshot_previews = dialog.media_previews[:3]
+    positions = [
+        preview.mapTo(dialog.screenshot_scroll.viewport(), QPoint(0, 0))
+        for preview in screenshot_previews
+    ]
+    assert dialog.SCREENSHOT_COLUMNS == 3
+    assert dialog.screenshot_scroll.viewport().width() >= (
+        dialog.SCREENSHOT_COLUMNS * dialog.SCREENSHOT_CARD_MINIMUM_WIDTH
+        + (dialog.SCREENSHOT_COLUMNS - 1) * 14
+    )
+    assert len({position.y() for position in positions}) == 1
+    assert len({position.x() for position in positions}) == 3
+    assert dialog.screenshot_scroll.horizontalScrollBar().maximum() == 0
+    dialog.close()
+
+
 def test_phone_image_export_dialog_paginates_large_lists(
     qt_app: QApplication, tmp_path: Path
 ) -> None:

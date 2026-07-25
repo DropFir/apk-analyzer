@@ -93,6 +93,40 @@ def test_media_review_is_landscape_and_previews_are_clickable(
     dialog.close()
 
 
+def test_media_review_checks_every_bounded_screenshot_by_default(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    suggested = tmp_path / "Fixture.png"
+    unrelated = tmp_path / "unrelated-name.png"
+    pixmap = QPixmap(360, 720)
+    pixmap.fill(QColor("#087763"))
+    assert pixmap.save(str(suggested))
+    assert pixmap.save(str(unrelated))
+    review = {
+        "screenshots": [
+            {
+                "remote_path": "/sdcard/DCIM/Screenshots/Fixture.png",
+                "file_name": "Fixture.png",
+                "localPath": str(suggested),
+            },
+            {
+                "remote_path": "/sdcard/DCIM/Screenshots/unrelated-name.png",
+                "file_name": "unrelated-name.png",
+                "localPath": str(unrelated),
+            },
+        ],
+        "suggestedScreenshotPaths": ["/sdcard/DCIM/Screenshots/Fixture.png"],
+        "selectedRecording": {"file_name": "Fixture.mp4"},
+        "recordingFrames": [],
+        "visibilitySuggestion": "visible",
+    }
+
+    dialog = MediaReviewDialog(review, str(tmp_path))
+
+    assert all(check.isChecked() for check in dialog.screenshot_checks.values())
+    dialog.close()
+
+
 def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
     qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -490,12 +490,10 @@ class MediaReviewDialog(QDialog):
         screenshot_rows.setHorizontalSpacing(14)
         screenshot_rows.setVerticalSpacing(16)
         screenshots = list(review.get("screenshots") or [])
-        suggested = set(review.get("suggestedScreenshotPaths") or [])
-        default_all = not suggested
         for index, record in enumerate(screenshots):
             remote_path = str(record.get("remote_path") or "")
             check = QCheckBox(str(record.get("file_name") or Path(remote_path).name))
-            check.setChecked(default_all or remote_path in suggested)
+            check.setChecked(True)
             check.setToolTip(remote_path)
             self.screenshot_checks[remote_path] = check
             card = QWidget()

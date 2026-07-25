@@ -9,6 +9,7 @@ import pytest
 
 from apkba_analyzer.device import (
     AdbClient,
+    abandon_capture_session,
     device_session_lock,
     ensure_native_abi_compatible,
     low_target_sdk_install_requirement,
@@ -387,6 +388,33 @@ def test_prepare_carries_optional_developer_into_pending_session(
     assert pending["developer"]["file_name"] == "developer.txt"
     assert pending["app"]["developer_name"] == "SEGA"
     assert pending["app"]["developer_source"] == "operator_provided_text_file"
+
+
+def test_abandon_capture_marks_session_without_deleting_bundle(tmp_path: Path) -> None:
+    bundle = tmp_path / "Intake"
+    bundle.mkdir()
+    source = bundle / "app.apk"
+    source.write_bytes(b"preserve")
+    pending_path = bundle / ".apkba-pending-session.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "status": "awaiting_manual_capture",
+                "source": {"path": str(source)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = abandon_capture_session(bundle)
+
+    abandoned = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert result["status"] == "abandoned"
+    assert result["filesPreserved"] is True
+    assert abandoned["status"] == "abandoned"
+    assert abandoned["abandoned"]["reason"] == "operator_cancelled_in_ui"
+    assert abandoned["abandoned"]["files_preserved"] is True
+    assert source.read_bytes() == b"preserve"
 
 
 def test_low_target_sdk_requirement_matches_android_15_install_policy() -> None:

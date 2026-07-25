@@ -614,6 +614,41 @@ def record_media_capture_end(
     }
 
 
+def abandon_capture_session(
+    bundle: str | os.PathLike[str],
+    *,
+    reason: str = "operator_cancelled_in_ui",
+) -> dict[str, Any]:
+    """Mark an unfinished capture abandoned without deleting its files."""
+
+    bundle_path = Path(bundle).expanduser().resolve()
+    pending_path = bundle_path / PENDING_FILE_NAME
+    if not pending_path.is_file():
+        raise ScanFailure("当前交接包没有可放弃的未完成取证会话。")
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ScanFailure("无法读取当前未完成取证会话。") from error
+    if not isinstance(pending, dict) or pending.get("status") != "awaiting_manual_capture":
+        raise ScanFailure("当前取证会话不是等待完成状态，未作更改。")
+
+    abandoned_at = _iso_now()
+    pending["status"] = "abandoned"
+    pending["abandoned"] = {
+        "at_local": abandoned_at,
+        "reason": reason,
+        "files_preserved": True,
+    }
+    _write_json_atomic(pending_path, pending)
+    return {
+        "status": "abandoned",
+        "bundlePath": str(bundle_path),
+        "pendingPath": str(pending_path),
+        "abandonedAt": abandoned_at,
+        "filesPreserved": True,
+    }
+
+
 def prepare_bundle(
     report: dict[str, Any],
     bundle: Path,

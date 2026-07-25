@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QThread, QUrl
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMessageBox
 
 from apkba_analyzer.app import (
     DropCard,
@@ -52,6 +53,7 @@ def test_main_window_uses_landscape_layout(
     assert window.output_frame.geometry().bottom() < window.device_frame.geometry().top()
     assert not hasattr(window, "scan_button")
     assert not hasattr(window, "copy_button")
+    assert window.clear_button.text() == "清空 / 放弃本次"
     window.close()
 
 
@@ -297,6 +299,70 @@ def test_full_window_drop_routes_apkm_and_image_together(
     assert window.source_card.file_name_label.text() == source.name
     assert window.icon_card.file_name_label.text() == icon.name
     assert window.developer_card.file_name_label.text() == developer.name
+    window.close()
+
+
+def test_clear_button_resets_optional_and_required_inputs(
+    qt_app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    source = tmp_path / "app.apk"
+    icon = tmp_path / "icon.webp"
+    developer = tmp_path / "developer.txt"
+    for path in (source, icon, developer):
+        path.write_bytes(b"fixture")
+    window = MainWindow()
+    window.source_card.set_path(str(source))
+    window.icon_card.set_path(str(icon))
+    window.developer_card.set_path(str(developer))
+    window.detail_label.setText("old detail")
+    window.progress.setValue(72)
+
+    window._clear_or_abandon_current()
+
+    assert window.source_path == ""
+    assert window.icon_path == ""
+    assert window.developer_path == ""
+    assert window.detail_label.text() == ""
+    assert window.progress.value() == 0
+    assert window.open_button.isHidden() is True
+    assert "已清空" in window.status_text.text()
+    window.close()
+
+
+def test_clear_button_abandons_pending_session_without_deleting_files(
+    qt_app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    bundle = tmp_path / "Intake"
+    bundle.mkdir()
+    source = bundle / "app.apk"
+    source.write_bytes(b"preserve")
+    pending = bundle / ".apkba-pending-session.json"
+    pending.write_text(
+        '{"status":"awaiting_manual_capture"}',
+        encoding="utf-8",
+    )
+    window = MainWindow()
+    window._capture_bundle_path = str(bundle)
+    window.bundle_path = str(bundle)
+
+    window._clear_or_abandon_current()
+
+    session = json.loads(pending.read_text(encoding="utf-8"))
+    assert session["status"] == "abandoned"
+    assert source.read_bytes() == b"preserve"
+    assert window._capture_bundle_path == ""
+    assert "标记为放弃" in window.status_text.text()
     window.close()
 
 

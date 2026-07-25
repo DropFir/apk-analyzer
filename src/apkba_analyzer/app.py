@@ -58,7 +58,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from apkba_analyzer.device import AdbClient, record_media_capture_end, scan_create_and_prepare
+from apkba_analyzer.device import (
+    AdbClient,
+    abandon_capture_session,
+    record_media_capture_end,
+    scan_create_and_prepare,
+)
 from apkba_analyzer.finish import (
     cleanup_media_review,
     finalize_evidence,
@@ -1212,11 +1217,16 @@ class MainWindow(QMainWindow):
         workflow_column.addLayout(configuration_column)
 
         action_row = QHBoxLayout()
+        self.clear_button = QPushButton("清空 / 放弃本次")
+        self.clear_button.setObjectName("secondaryAction")
+        self.clear_button.setMinimumHeight(42)
+        self.clear_button.clicked.connect(self._clear_or_abandon_current)
         self.prepare_button = QPushButton("连接手机取证")
         self.prepare_button.setObjectName("primaryButton")
         self.prepare_button.setMinimumHeight(42)
         self.prepare_button.clicked.connect(self._start_prepare)
         action_row.addStretch()
+        action_row.addWidget(self.clear_button)
         action_row.addWidget(self.prepare_button)
         workflow_column.addLayout(action_row)
 
@@ -1628,6 +1638,60 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "选择输出位置", self.output_edit.text())
         if path:
             self.output_edit.setText(path)
+
+    def _clear_or_abandon_current(self) -> None:
+        if self.thread and self.thread.isRunning():
+            QMessageBox.information(
+                self,
+                "当前步骤仍在运行",
+                "正在扫描、安装或生成文件时不能强制中断，以免留下不完整状态。"
+                "请等待当前步骤结束，再点击“清空 / 放弃本次”。",
+            )
+            return
+
+        active_bundle = self._capture_bundle_path or self._finish_bundle_path
+        if active_bundle:
+            choice = QMessageBox.question(
+                self,
+                "放弃本次取证？",
+                "这会把当前会话标记为“已放弃”并清空界面。\n\n"
+                "现有交接目录、APK、图标、截图和录屏都不会删除，"
+                "应用也不会自动卸载。确定继续吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                abandon_capture_session(active_bundle)
+            except Exception as error:
+                QMessageBox.warning(self, "无法放弃本次取证", str(error))
+                return
+            message = "本次取证已标记为放弃，原交接目录仍保留；可以选择下一份 APK。"
+        else:
+            message = "当前选择和界面信息已清空。"
+        self._clear_current_ui(message)
+
+    def _clear_current_ui(self, message: str) -> None:
+        self.source_path = ""
+        self.icon_path = ""
+        self.developer_path = ""
+        self.source_card.clear_path()
+        self.icon_card.clear_path()
+        self.developer_card.clear_path()
+        self.bundle_path = ""
+        self._open_path = ""
+        self._finish_bundle_path = ""
+        self._finish_review = None
+        self._reset_capture_state()
+        self.progress.setValue(0)
+        self.status_badge.setText("等待文件")
+        self.status_badge.setStyleSheet("")
+        self.status_text.setText(message)
+        self.detail_label.clear()
+        self.open_button.setVisible(False)
+        self.finish_button.setText("完成已有取证")
+        self.finish_button.setEnabled(True)
 
     def _require_capture_end_before_next_task(self) -> bool:
         if not self._capture_bundle_path or self._capture_completed:
@@ -2301,6 +2365,7 @@ class MainWindow(QMainWindow):
         )
         self.finish_button.setEnabled(not busy)
         self.image_export_button.setEnabled(not busy)
+        self.clear_button.setEnabled(True)
 
     def _reset_capture_state(self) -> None:
         self._capture_bundle_path = ""

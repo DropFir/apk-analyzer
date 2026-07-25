@@ -14,6 +14,11 @@ from apkba_analyzer.device import AdbClient, device_session_lock
 from apkba_analyzer.models import ScanFailure
 
 SHARED_STORAGE_ROOT = PurePosixPath("/sdcard")
+SHARED_STORAGE_ALIASES = (
+    SHARED_STORAGE_ROOT,
+    PurePosixPath("/storage/emulated/0"),
+    PurePosixPath("/storage/self/primary"),
+)
 IMAGE_EXTENSIONS = frozenset(
     {
         ".avif",
@@ -68,15 +73,31 @@ def _parse_path_listing(output: str) -> list[dict[str, Any]]:
             "size_bytes": None,
         }
         for line in output.splitlines()
-        if line.startswith("/sdcard/")
+        if line.startswith("/")
     ]
+
+
+def _parse_media_store_listing(output: str) -> list[dict[str, Any]]:
+    paths: list[str] = []
+    for line in output.splitlines():
+        match = re.search(r"(?:^|\s)_data=(/.*)$", line.strip())
+        if match and match.group(1) not in paths:
+            paths.append(match.group(1))
+    return _parse_path_listing("\n".join(paths))
+
+
+def _shared_relative(path: PurePosixPath) -> PurePosixPath | None:
+    for root in SHARED_STORAGE_ALIASES:
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            continue
+    return None
 
 
 def _is_shared_image(record: dict[str, Any]) -> bool:
     path = PurePosixPath(str(record.get("remote_path") or ""))
-    try:
-        path.relative_to(SHARED_STORAGE_ROOT)
-    except ValueError:
+    if _shared_relative(path) is None:
         return False
     return bool(path.name) and path.suffix.casefold() in IMAGE_EXTENSIONS
 
@@ -89,6 +110,9 @@ def list_phone_images(
     """List image metadata under Android shared storage without pulling image bytes."""
 
     client = adb or AdbClient()
+    warning_lines: list[str] = []
+    fallback_used = False
+    media_store_used = False
     with device_session_lock(serial):
         device = client.device_facts(serial)
         detailed = client.invoke(
@@ -100,18 +124,55 @@ def list_phone_images(
             allow_failure=True,
             timeout=300,
         )
+        detailed_warnings = [
+            line.strip()
+            for line in (detailed.stderr or "").splitlines()
+            if line.strip()
+        ]
         records = _parse_detailed_listing(detailed.stdout or "")
-        fallback_used = False
-        result = detailed
-        if not records and (detailed.returncode or detailed.stdout):
+        if records:
+            warning_lines.extend(detailed_warnings)
+        if not records:
             fallback_used = True
+            fallback_warnings: list[str] = []
+            for root in SHARED_STORAGE_ALIASES:
+                result = client.invoke(
+                    ["shell", f"find '{root}' -type f -print"],
+                    serial=serial,
+                    allow_failure=True,
+                    timeout=300,
+                )
+                current_warnings = [
+                    line.strip()
+                    for line in (result.stderr or "").splitlines()
+                    if line.strip()
+                ]
+                fallback_warnings.extend(current_warnings)
+                records = _parse_path_listing(result.stdout or "")
+                if records:
+                    warning_lines.extend(current_warnings)
+                    break
+            if not records:
+                warning_lines.extend(detailed_warnings)
+                warning_lines.extend(fallback_warnings)
+        if not records:
+            media_store_used = True
             result = client.invoke(
-                ["shell", "find '/sdcard' -type f -print"],
+                [
+                    "shell",
+                    "content query --uri content://media/external/images/media "
+                    "--projection _data",
+                ],
                 serial=serial,
                 allow_failure=True,
                 timeout=300,
             )
-            records = _parse_path_listing(result.stdout or "")
+            warning_lines.extend(
+                line.strip()
+                for line in (result.stderr or "").splitlines()
+                if line.strip()
+            )
+            records = _parse_media_store_listing(result.stdout or "")
 
     images = [record for record in records if _is_shared_image(record)]
     images.sort(
@@ -121,11 +182,6 @@ def list_phone_images(
         ),
         reverse=True,
     )
-    warning_lines = [
-        line.strip()
-        for line in (result.stderr or "").splitlines()
-        if line.strip()
-    ]
     return {
         "status": "ready",
         "device": device,
@@ -139,6 +195,7 @@ def list_phone_images(
             if record.get("size_bytes") is not None
         ),
         "fallbackListingUsed": fallback_used,
+        "mediaStoreListingUsed": media_store_used,
         "warning": " | ".join(warning_lines[-3:]),
     }
 
@@ -176,10 +233,9 @@ def _portable_component(value: str, fallback: str) -> str:
 
 def _safe_relative_path(remote_path: str) -> Path:
     pure = PurePosixPath(remote_path)
-    try:
-        relative = pure.relative_to(SHARED_STORAGE_ROOT)
-    except ValueError as error:
-        raise ScanFailure(f"拒绝导出共享存储之外的文件：{remote_path}") from error
+    relative = _shared_relative(pure)
+    if relative is None:
+        raise ScanFailure(f"拒绝导出共享存储之外的文件：{remote_path}")
     if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise ScanFailure(f"手机图片路径无效：{remote_path}")
     portable = [

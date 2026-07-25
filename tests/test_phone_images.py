@@ -30,6 +30,24 @@ class FakeImageAdb:
         return completed("1 file pulled")
 
 
+class EmptyDetailedImageAdb(FakeImageAdb):
+    def invoke(self, arguments, **_kwargs):
+        self.calls.append(arguments)
+        if "-printf" in arguments[-1]:
+            return completed()
+        return completed("/storage/emulated/0/DCIM/Camera/fallback.jpg\n")
+
+
+class MediaStoreImageAdb(FakeImageAdb):
+    def invoke(self, arguments, **_kwargs):
+        self.calls.append(arguments)
+        if "content query" in arguments[-1]:
+            return completed(
+                "Row: 0 _data=/storage/emulated/0/Pictures/from-media-store.webp\n"
+            )
+        return completed()
+
+
 def test_phone_image_listing_filters_extensions_and_sorts_newest_first() -> None:
     listing = (
         "1000.0\0"
@@ -55,6 +73,25 @@ def test_phone_image_listing_filters_extensions_and_sorts_newest_first() -> None
     assert adb.calls[0][0] == "shell"
 
 
+def test_phone_image_listing_falls_back_after_empty_successful_detailed_scan() -> None:
+    adb = EmptyDetailedImageAdb("")
+
+    result = list_phone_images("PHONE-1", adb=adb)
+
+    assert result["fallbackListingUsed"] is True
+    assert result["imageCount"] == 1
+    assert result["images"][0]["remote_path"].startswith("/storage/emulated/0/")
+
+
+def test_phone_image_listing_uses_media_store_when_find_returns_nothing() -> None:
+    adb = MediaStoreImageAdb("")
+
+    result = list_phone_images("PHONE-1", adb=adb)
+
+    assert result["mediaStoreListingUsed"] is True
+    assert result["images"][0]["file_name"] == "from-media-store.webp"
+
+
 def test_phone_image_export_preserves_folders_and_avoids_case_collisions(
     tmp_path: Path,
 ) -> None:
@@ -78,6 +115,19 @@ def test_phone_image_export_preserves_folders_and_avoids_case_collisions(
     assert len(copied) == 2
     assert len({path.name.casefold() for path in copied}) == 2
     assert all(path.read_bytes().startswith(b"copied:/sdcard/") for path in copied)
+
+
+def test_phone_image_export_accepts_emulated_storage_alias(tmp_path: Path) -> None:
+    adb = FakeImageAdb("")
+
+    result = export_phone_images(
+        "PHONE-1",
+        [{"remote_path": "/storage/emulated/0/Pictures/alias.png"}],
+        tmp_path,
+        adb=adb,
+    )
+
+    assert (Path(result["outputPath"]) / "Pictures" / "alias.png").is_file()
 
 
 def test_phone_image_export_rejects_paths_outside_shared_storage(

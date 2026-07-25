@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from PySide6.QtCore import (
+    QElapsedTimer,
     QEvent,
     QObject,
     QSettings,
@@ -1072,6 +1073,26 @@ class MainWindow(QMainWindow):
         self.thread: QThread | None = None
         self.worker: QObject | None = None
         self.settings = QSettings("APKBA", "APKBA Analyzer")
+        self._prepare_completion_duration_ms = 20_000
+        self._prepare_completion_elapsed = QElapsedTimer()
+        self._prepare_completion_timer = QTimer(self)
+        self._prepare_completion_timer.setInterval(100)
+        self._prepare_completion_timer.timeout.connect(
+            self._advance_prepare_completion
+        )
+        self._prepare_completion_start_value = 80
+        self._pending_prepare_success: (
+            tuple[dict[str, object], dict[str, object], str] | None
+        ) = None
+        self._finalize_completion_duration_ms = 10_000
+        self._finalize_completion_elapsed = QElapsedTimer()
+        self._finalize_completion_timer = QTimer(self)
+        self._finalize_completion_timer.setInterval(100)
+        self._finalize_completion_timer.timeout.connect(
+            self._advance_finalize_completion
+        )
+        self._finalize_completion_start_value = 90
+        self._pending_finalize_success: dict[str, object] | None = None
         self.setWindowTitle("APKBA Analyzer")
         self.setAcceptDrops(True)
         self.resize(1080, 660)
@@ -1590,6 +1611,9 @@ class MainWindow(QMainWindow):
         self._active_device_serial = str(serial)
         self._active_device_display = self.device_combo.currentText()
         self.settings.setValue("output", output)
+        self._prepare_completion_timer.stop()
+        self._prepare_completion_elapsed.invalidate()
+        self._pending_prepare_success = None
         self._set_busy(True)
         self.open_button.setVisible(False)
         self._reset_capture_state()
@@ -1608,7 +1632,7 @@ class MainWindow(QMainWindow):
         )
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._on_progress)
+        self.worker.progress.connect(self._on_prepare_progress)
         self.worker.low_target_sdk_confirmation_required.connect(
             self._on_low_target_sdk_confirmation_required
         )
@@ -1882,11 +1906,55 @@ class MainWindow(QMainWindow):
         else:
             self.status_text.setText(message)
 
+    @Slot(int, str)
+    def _on_prepare_progress(self, value: int, message: str) -> None:
+        visual_value = min(80, max(1, round(value * 0.8)))
+        self.progress.setValue(max(self.progress.value(), visual_value))
+        if self._active_device_serial:
+            self.status_text.setText(f"{message} ｜ 目标：{self._active_device_display}")
+        else:
+            self.status_text.setText(message)
+
     @Slot(object, object, str)
     def _on_prepare_success(self, report: object, result: object, bundle: str) -> None:
+        self._pending_prepare_success = (dict(report), dict(result), bundle)
+        self._prepare_completion_start_value = max(1, min(99, self.progress.value()))
+        self._prepare_completion_elapsed.start()
+        self._prepare_completion_timer.start()
+        self.status_badge.setText("完成中")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText("手机端取证准备已完成，正在整理检测结果…")
+
+    def _advance_prepare_completion(self) -> None:
+        if (
+            not self._prepare_completion_elapsed.isValid()
+            or self._pending_prepare_success is None
+        ):
+            self._prepare_completion_timer.stop()
+            return
+        duration = max(1, self._prepare_completion_duration_ms)
+        elapsed = self._prepare_completion_elapsed.elapsed()
+        ratio = min(1.0, elapsed / duration)
+        remaining = 100 - self._prepare_completion_start_value
+        value = self._prepare_completion_start_value + round(remaining * ratio)
+        self.progress.setValue(min(100, value))
+        if elapsed < duration:
+            return
+        self._prepare_completion_timer.stop()
+        report, result, bundle = self._pending_prepare_success
+        self._pending_prepare_success = None
+        self._present_prepare_success(report, result, bundle)
+
+    def _present_prepare_success(
+        self,
+        report: dict[str, object],
+        result: dict[str, object],
+        bundle: str,
+    ) -> None:
         self._set_busy(False)
-        scan_result = dict(report)
-        prepare_result = dict(result)
+        self.progress.setValue(100)
+        scan_result = report
+        prepare_result = result
         app = scan_result.get("app") or {}
         signature = scan_result.get("signature") or {}
         self.status_badge.setText("等待人工取证")
@@ -2160,6 +2228,9 @@ class MainWindow(QMainWindow):
         review: dict[str, object],
         choices: dict[str, object],
     ) -> None:
+        self._finalize_completion_timer.stop()
+        self._finalize_completion_elapsed.invalidate()
+        self._pending_finalize_success = None
         self._set_busy(True)
         self.progress.setValue(82)
         self.status_badge.setText("生成中")
@@ -2169,7 +2240,7 @@ class MainWindow(QMainWindow):
         self.worker = FinalizeWorker(review, choices)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._on_progress)
+        self.worker.progress.connect(self._on_finalize_progress)
         self.worker.succeeded.connect(self._on_finalize_success)
         self.worker.failed.connect(self._on_failure)
         self.worker.succeeded.connect(self.thread.quit)
@@ -2179,10 +2250,48 @@ class MainWindow(QMainWindow):
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
 
+    @Slot(int, str)
+    def _on_finalize_progress(self, value: int, message: str) -> None:
+        visual_value = min(90, max(82, round(value * 0.9)))
+        self.progress.setValue(max(self.progress.value(), visual_value))
+        if self._active_device_serial:
+            self.status_text.setText(f"{message} ｜ 目标：{self._active_device_display}")
+        else:
+            self.status_text.setText(message)
+
     @Slot(object)
     def _on_finalize_success(self, result: object) -> None:
+        self._pending_finalize_success = dict(result)
+        self._finalize_completion_start_value = max(1, min(99, self.progress.value()))
+        self._finalize_completion_elapsed.start()
+        self._finalize_completion_timer.start()
+        self.status_badge.setText("完成中")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText("证据包已生成并通过验证，正在整理最终结果…")
+
+    def _advance_finalize_completion(self) -> None:
+        if (
+            not self._finalize_completion_elapsed.isValid()
+            or self._pending_finalize_success is None
+        ):
+            self._finalize_completion_timer.stop()
+            return
+        duration = max(1, self._finalize_completion_duration_ms)
+        elapsed = self._finalize_completion_elapsed.elapsed()
+        ratio = min(1.0, elapsed / duration)
+        remaining = 100 - self._finalize_completion_start_value
+        value = self._finalize_completion_start_value + round(remaining * ratio)
+        self.progress.setValue(min(100, value))
+        if elapsed < duration:
+            return
+        self._finalize_completion_timer.stop()
+        result = self._pending_finalize_success
+        self._pending_finalize_success = None
+        self._present_finalize_success(result)
+
+    def _present_finalize_success(self, result: dict[str, object]) -> None:
         self._set_busy(False)
-        final = dict(result)
+        final = result
         if self._finish_review:
             with suppress(Exception):
                 cleanup_media_review(str(self._finish_review["reviewRoot"]))
@@ -2212,6 +2321,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str)
     def _on_failure(self, message: str, detail: str) -> None:
+        self._prepare_completion_timer.stop()
+        self._prepare_completion_elapsed.invalidate()
+        self._pending_prepare_success = None
+        self._finalize_completion_timer.stop()
+        self._finalize_completion_elapsed.invalidate()
+        self._pending_finalize_success = None
         self._set_busy(False)
         self.status_badge.setText("失败")
         self.status_badge.setStyleSheet("background:#fee8e7;color:#a52a24")

@@ -168,7 +168,7 @@ def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
     monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
     window = MainWindow()
     bundle = tmp_path / "agent1-handoff"
-    window._on_prepare_success(
+    window._present_prepare_success(
         {"app": {"applicationLabel": "Fixture", "packageName": "com.example.fixture"}},
         {
             "deviceModel": "Pixel",
@@ -188,6 +188,7 @@ def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
     assert window._capture_device_serial == "PHONE-A"
     assert "低目标 SDK 兼容安装：已人工确认" in window.detail_label.text()
 
+    window._run_after_current_thread = lambda _callback: None
     window._on_capture_end_success(
         {
             "deviceModel": "Pixel",
@@ -204,6 +205,62 @@ def test_capture_end_result_marks_bundle_ready_for_the_next_apk(
     assert window.icon_path == ""
     assert "截图 3 张 · 录屏 1 段" in window.detail_label.text()
     assert "可以直接拖入下一份 APK" in window.status_text.text()
+    window.close()
+
+
+def test_prepare_success_adds_uniform_ui_only_completion_time(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    window = MainWindow()
+    window._prepare_completion_duration_ms = 60
+    window.progress.setValue(80)
+    window._set_busy(True)
+
+    window._on_prepare_success(
+        {"app": {"applicationLabel": "Fixture", "packageName": "com.example.fixture"}},
+        {"deviceModel": "Pixel", "deviceSerial": "PHONE-A"},
+        str(tmp_path / "agent1-handoff"),
+    )
+
+    assert window.progress.value() == 80
+    assert window._pending_prepare_success is not None
+    assert window.prepare_button.isEnabled() is False
+    QTest.qWait(180)
+    qt_app.processEvents()
+    assert window.progress.value() == 100
+    assert window._pending_prepare_success is None
+    assert window.prepare_button.isEnabled() is True
+    window.close()
+
+
+def test_finalize_success_adds_uniform_ui_only_completion_time(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    window = MainWindow()
+    window._finalize_completion_duration_ms = 60
+    window.progress.setValue(90)
+    window._set_busy(True)
+
+    window._on_finalize_success(
+        {
+            "packagePath": str(tmp_path / "evidence"),
+            "screenshotCount": 3,
+            "recordingStatus": "visible",
+            "sourceSha256": "abc123",
+        }
+    )
+
+    assert window.progress.value() == 90
+    assert window._pending_finalize_success is not None
+    assert window.prepare_button.isEnabled() is False
+    QTest.qWait(180)
+    qt_app.processEvents()
+    assert window.progress.value() == 100
+    assert window._pending_finalize_success is None
+    assert window.prepare_button.isEnabled() is True
+    assert window.status_badge.text() == "证据包完成"
     window.close()
 
 

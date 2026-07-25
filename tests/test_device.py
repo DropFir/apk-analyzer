@@ -208,9 +208,18 @@ def test_select_apkm_matches_feature_module_configs() -> None:
 
 
 class FakePrepareAdb:
-    def __init__(self, *, install_ok: bool = True, exact_launch_ok: bool = True):
+    def __init__(
+        self,
+        *,
+        install_ok: bool = True,
+        exact_launch_ok: bool = True,
+        focused: str = "com.example.app/.MainActivity",
+        visible_texts: list[str] | None = None,
+    ):
         self.install_ok = install_ok
         self.exact_launch_ok = exact_launch_ok
+        self.focused = focused
+        self._visible_texts = visible_texts or []
         self.calls: list[tuple[str | None, list[str]]] = []
 
     def invoke(
@@ -230,6 +239,8 @@ class FakePrepareAdb:
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
         if arguments[:4] == ["shell", "am", "start", "-n"]:
             return completed("Starting\n" if self.exact_launch_ok else "Error: bad activity\n")
+        if arguments[:4] == ["shell", "am", "start", "-a"]:
+            return completed("Starting\n" if self.exact_launch_ok else "Error: bad action\n")
         if arguments[:2] == ["shell", "monkey"]:
             return completed("Events injected: 1\n")
         raise AssertionError(arguments)
@@ -246,10 +257,10 @@ class FakePrepareAdb:
         }
 
     def focused_activity(self, _serial: str):
-        return "com.example.app/.MainActivity"
+        return self.focused
 
     def visible_ui_texts(self, _serial: str):
-        return []
+        return list(self._visible_texts)
 
     def media_snapshot(self, _serial: str):
         return {
@@ -566,6 +577,43 @@ def test_prepare_uses_one_monkey_fallback_for_rejected_component(
 
     monkey_calls = [args for _serial, args in adb.calls if args[:2] == ["shell", "monkey"]]
     assert len(monkey_calls) == 1
+
+
+def test_prepare_opens_and_confirms_health_connect_system_settings_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["app"].update(
+        {
+            "packageName": "com.google.android.apps.healthdata",
+            "applicationLabel": "Health Connect",
+            "launcherActivity": None,
+        }
+    )
+    adb = FakePrepareAdb(
+        focused=(
+            "com.google.android.healthconnect.controller/"
+            "com.android.healthconnect.controller.MainActivity"
+        ),
+        visible_texts=["Health Connect", "Your health apps"],
+    )
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    result = prepare_bundle(report, bundle, "PHONE-HEALTH", adb=adb)
+
+    pending = json.loads((bundle / ".apkba-pending-session.json").read_text(encoding="utf-8"))
+    action_call = next(
+        arguments
+        for _serial, arguments in adb.calls
+        if arguments[:4] == ["shell", "am", "start", "-a"]
+    )
+    assert action_call[-1] == "android.health.connect.action.HEALTH_HOME_SETTINGS"
+    assert not any(arguments[:2] == ["shell", "monkey"] for _serial, arguments in adb.calls)
+    assert result["launchStatus"] == "success_system_settings_entry"
+    assert pending["launch"]["result"] == "success_system_settings_entry"
+    assert pending["launch"]["system_entry_foreground_confirmed"] is True
+    assert pending["launch"]["visible_texts"] == ["Health Connect", "Your health apps"]
 
 
 def test_prepare_installs_apkm_with_install_multiple(

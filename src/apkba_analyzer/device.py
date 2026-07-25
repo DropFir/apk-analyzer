@@ -26,6 +26,15 @@ from apkba_analyzer.tools import _subprocess_creation_flags
 SCREENSHOT_DIRECTORY = "/sdcard/DCIM/Screenshots"
 RECORDING_DIRECTORY = "/sdcard/DCIM/Screen recordings"
 PENDING_FILE_NAME = ".apkba-pending-session.json"
+SYSTEM_MANAGED_ENTRYPOINTS = {
+    "com.google.android.apps.healthdata": {
+        "action": "android.health.connect.action.HEALTH_HOME_SETTINGS",
+        "foregroundPackages": {
+            "com.android.healthconnect.controller",
+            "com.google.android.healthconnect.controller",
+        },
+    }
+}
 
 RunProcess = Callable[..., subprocess.CompletedProcess[str]]
 Progress = Callable[[int, str], None]
@@ -756,6 +765,7 @@ def prepare_bundle(
     _progress(progress, 86, "启动应用并检查前台页面…")
     launch_started = _iso_now()
     component = _launch_component(package_name, app.get("launcherActivity"))
+    system_entry = SYSTEM_MANAGED_ENTRYPOINTS.get(package_name)
     fallback_used = False
     if component:
         primary = client.invoke(
@@ -768,6 +778,23 @@ def prepare_bundle(
             r"(?im)^\s*(Error\b|Exception\b|Security exception\b)", primary_text
         )
         launch_method = "am_start_component"
+    elif system_entry:
+        primary = client.invoke(
+            [
+                "shell",
+                "am",
+                "start",
+                "-a",
+                str(system_entry["action"]),
+            ],
+            serial=serial,
+            allow_failure=True,
+        )
+        primary_text = (primary.stdout or "") + "\n" + (primary.stderr or "")
+        accepted = primary.returncode == 0 and not re.search(
+            r"(?im)^\s*(Error\b|Exception\b|Security exception\b)", primary_text
+        )
+        launch_method = "am_start_system_settings_action"
     else:
         primary = client.invoke(
             [
@@ -803,8 +830,17 @@ def prepare_bundle(
         launch_method = "am_start_component_then_monkey"
     time.sleep(0.5)
     focused = client.focused_activity(serial)
+    focused_package = focused.split("/", 1)[0] if focused else ""
+    system_entry_confirmed = bool(
+        system_entry
+        and accepted
+        and focused_package in set(system_entry["foregroundPackages"])
+    )
     if focused and focused.startswith(package_name + "/"):
         launch_result, launch_reason = "success", None
+    elif system_entry_confirmed:
+        launch_result = "success_system_settings_entry"
+        launch_reason = "system_managed_controller_foreground"
     elif focused and focused.startswith("com.android.vending/"):
         launch_result, launch_reason = "blocked_google_play_required", "google_play_foreground"
     elif not focused:
@@ -813,7 +849,11 @@ def prepare_bundle(
         launch_result, launch_reason = "not_confirmed", "system_component_foreground"
     else:
         launch_result, launch_reason = "not_confirmed", "unrelated_app_foreground"
-    visible_texts = client.visible_ui_texts(serial) if _system_blocker(focused) else []
+    visible_texts = (
+        client.visible_ui_texts(serial)
+        if _system_blocker(focused) or system_entry_confirmed
+        else []
+    )
     setup["launch"] = {
         "started_local": launch_started,
         "finished_local": _iso_now(),
@@ -826,6 +866,8 @@ def prepare_bundle(
         "command_summary": _output_summary((final.stdout or "") + "\n" + (final.stderr or "")),
         "focused_activity": focused,
         "reason": launch_reason,
+        "system_entry_action": (system_entry or {}).get("action"),
+        "system_entry_foreground_confirmed": system_entry_confirmed,
     }
 
     _progress(progress, 93, "记录人工截图和录屏之前的基线…")
@@ -900,6 +942,8 @@ def prepare_bundle(
             "reason": launch_reason,
             "focused_activity": focused,
             "visible_texts": visible_texts,
+            "system_entry_action": (system_entry or {}).get("action"),
+            "system_entry_foreground_confirmed": system_entry_confirmed,
         },
         "setup": setup,
         "media_baseline": {

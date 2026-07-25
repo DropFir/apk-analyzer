@@ -822,6 +822,14 @@ def finalize_evidence(
                     "fallback_used"
                 ),
                 "launch_reason": (session.get("launch") or {}).get("reason"),
+                "launch_system_entry_action": (session.get("launch") or {}).get(
+                    "system_entry_action"
+                ),
+                "launch_system_entry_foreground_confirmed": bool(
+                    (session.get("launch") or {}).get(
+                        "system_entry_foreground_confirmed"
+                    )
+                ),
                 "focused_activity": (session.get("launch") or {}).get("focused_activity"),
                 "visible_texts": list(
                     (session.get("launch") or {}).get("visible_texts") or []

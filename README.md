@@ -18,6 +18,8 @@
 
 “清空 / 放弃本次”可清除尚未开始的文件选择；若本次取证已经建立，则程序只把 pending 会话标记为 `abandoned` 后释放界面，保留交接目录和现有文件，不自动删除证据或卸载应用。正在扫描、安装或写包的步骤不会被强制中断。
 
+对于没有桌面 LAUNCHER、由系统设置承载界面的 Health Connect，工具使用 Android 的 Health Connect 设置 Action 打开页面，并在系统控制器确实位于前台时记录 `success_system_settings_entry`；不会把任意系统页面误记为安装包自己的 Activity。
+
 ## 编辑使用
 
 Windows 双击 `dist\APKBA-Analyzer.exe` 单文件发布版，macOS 打开 `APKBA-Analyzer.app`：

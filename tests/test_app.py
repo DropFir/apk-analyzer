@@ -8,7 +8,12 @@ from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap, QWheelEv
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
-from apkba_analyzer.app import DropCard, MainWindow, MediaReviewDialog
+from apkba_analyzer.app import (
+    DropCard,
+    MainWindow,
+    MediaReviewDialog,
+    PhoneImageExportDialog,
+)
 
 
 @pytest.fixture
@@ -124,6 +129,36 @@ def test_media_review_checks_every_bounded_screenshot_by_default(
     dialog = MediaReviewDialog(review, str(tmp_path))
 
     assert all(check.isChecked() for check in dialog.screenshot_checks.values())
+    dialog.close()
+
+
+def test_phone_image_export_dialog_paginates_large_lists(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    records = [
+        {
+            "remote_path": f"/sdcard/DCIM/Camera/photo-{index:04d}.jpg",
+            "file_name": f"photo-{index:04d}.jpg",
+            "modified_epoch_seconds": 1000 + index,
+            "size_bytes": 1024,
+        }
+        for index in range(450)
+    ]
+    dialog = PhoneImageExportDialog(
+        {
+            "device": {"model": "Fixture Phone"},
+            "serial": "PHONE-1",
+            "images": records,
+        },
+        str(tmp_path),
+    )
+
+    assert dialog.table.rowCount() == 200
+    assert "第 1/3 页" in dialog.page_label.text()
+    dialog._next_page()
+    assert dialog.table.rowCount() == 200
+    dialog._next_page()
+    assert dialog.table.rowCount() == 50
     dialog.close()
 
 

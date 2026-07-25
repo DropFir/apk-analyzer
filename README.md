@@ -27,6 +27,8 @@ Windows 双击 `dist\APKBA-Analyzer.exe` 单文件发布版，macOS 打开 `APKB
 7. 点击“生成证据包”。程序会拉取确认媒体、复制原始安装包和图标、写入 schema3 `observations.json`，验证哈希、图片、MP4 和目录残留。验证通过的证据目录可直接交给 Agent2。
 8. EXE 重启后可点击“完成已有取证”，选择含 `.apkba-pending-session.json` 的交接文件夹继续，不需要重新安装。
 
+“导出手机图片”是独立功能：选择已授权手机后可读取 `/sdcard` 共享存储中的图片清单，按文件名或目录筛选，并下载所选图片或全部图片。清单每页最多显示 200 条且不会预加载原图，因此大量图片不会一次占满界面内存。导出会保留 `DCIM`、`Pictures`、`Download` 等相对目录，不会删除或修改手机文件，也不会绕过 Android 对应用私有目录的访问限制。
+
 交接目录保持扁平：一个原始 APK/XAPK/APKM、一个 `icon.*`、`scan_report.json`、`agent1_handoff.json`、浏览器可打开的 `scan_summary.html` 和说明文件。取证准备模式会生成 `.apkba-pending-session.json`；成功完成后，证据包直接位于最后人工选择的目录下，文件夹名为 `<应用名>_<包名>_<日期>/`，包含 `_READY`、`observations.json`、版本说明、源安装包、截图和原始 MP4。原始 intake 输入继续保留。
 
 ## 本地开发（Windows）

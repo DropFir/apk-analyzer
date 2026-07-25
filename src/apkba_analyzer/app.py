@@ -6,7 +6,8 @@ import sys
 import threading
 import traceback
 from contextlib import suppress
-from pathlib import Path
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 
 from PySide6.QtCore import (
     QEvent,
@@ -31,6 +32,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -41,6 +43,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -49,6 +52,8 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -60,6 +65,7 @@ from apkba_analyzer.finish import (
     finish_preflight,
     prepare_media_review,
 )
+from apkba_analyzer.phone_images import export_phone_images, list_phone_images
 from apkba_analyzer.scanner import SUPPORTED_IMAGES, SUPPORTED_SOURCES
 
 
@@ -317,6 +323,53 @@ class DeviceWorker(QObject):
             self.failed.emit(str(error), traceback.format_exc())
 
 
+class PhoneImageListWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    def __init__(self, serial: str):
+        super().__init__()
+        self.serial = serial
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(list_phone_images(self.serial))
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
+class PhoneImageDownloadWorker(QObject):
+    progress = Signal(int, str)
+    succeeded = Signal(object)
+    failed = Signal(str, str)
+
+    def __init__(
+        self,
+        serial: str,
+        records: list[dict[str, object]],
+        output_root: str,
+    ):
+        super().__init__()
+        self.serial = serial
+        self.records = records
+        self.output_root = output_root
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.succeeded.emit(
+                export_phone_images(
+                    self.serial,
+                    self.records,
+                    self.output_root,
+                    progress=lambda value, message: self.progress.emit(value, message),
+                )
+            )
+        except Exception as error:
+            self.failed.emit(str(error), traceback.format_exc())
+
+
 class PrepareWorker(QObject):
     progress = Signal(int, str)
     succeeded = Signal(object, object, str)
@@ -447,6 +500,292 @@ class FinalizeWorker(QObject):
             self.succeeded.emit(result)
         except Exception as error:
             self.failed.emit(str(error), traceback.format_exc())
+
+
+class PhoneImageExportDialog(QDialog):
+    """Paginated metadata-only picker for an independent phone image export."""
+
+    PAGE_SIZE = 200
+
+    def __init__(
+        self,
+        listing: dict[str, object],
+        default_output: str,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.listing = listing
+        self.records = [dict(record) for record in listing.get("images") or []]
+        self.filtered_records = list(self.records)
+        self.selected_paths: set[str] = set()
+        self.page = 0
+        self._updating_table = False
+        self._choices: dict[str, object] = {}
+        self.setObjectName("phoneImageDialog")
+        self.setWindowTitle("导出手机图片")
+        self.resize(1040, 700)
+        self.setMinimumSize(820, 560)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        device = dict(listing.get("device") or {})
+        summary = QLabel(
+            f"{device.get('model') or 'Android 手机'} · "
+            f"{listing.get('serial') or '序列号未确认'} · "
+            f"发现 {len(self.records)} 张共享存储图片"
+        )
+        summary.setObjectName("imageExportSummary")
+        layout.addWidget(summary)
+
+        explanation = QLabel(
+            "这里只读取文件清单，不预加载原图。列表每页最多 200 条；"
+            "下载后会保留 DCIM、Pictures、Download 等手机文件夹结构。"
+        )
+        explanation.setObjectName("groupHint")
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        warning = str(listing.get("warning") or "")
+        if warning:
+            warning_label = QLabel(f"部分目录可能无法读取：{warning}")
+            warning_label.setObjectName("analysisHint")
+            warning_label.setWordWrap(True)
+            layout.addWidget(warning_label)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("筛选"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("输入文件名或手机文件夹，例如 Camera、Screenshots")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._apply_filter)
+        filter_row.addWidget(self.search_edit, 1)
+        self.selection_label = QLabel("已选择 0 张")
+        self.selection_label.setObjectName("selectionBadge")
+        filter_row.addWidget(self.selection_label)
+        layout.addLayout(filter_row)
+
+        self.table = QTableWidget()
+        self.table.setObjectName("phoneImageTable")
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(
+            ["选择", "文件名", "手机文件夹", "修改时间", "大小"]
+        )
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.itemChanged.connect(self._on_item_changed)
+        layout.addWidget(self.table, 1)
+
+        page_row = QHBoxLayout()
+        self.select_page_button = QPushButton("本页全选")
+        self.select_page_button.setObjectName("softButton")
+        self.select_page_button.clicked.connect(self._select_current_page)
+        self.clear_button = QPushButton("清除选择")
+        self.clear_button.clicked.connect(self._clear_selection)
+        self.previous_button = QPushButton("上一页")
+        self.previous_button.clicked.connect(self._previous_page)
+        self.page_label = QLabel("")
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.next_button = QPushButton("下一页")
+        self.next_button.clicked.connect(self._next_page)
+        page_row.addWidget(self.select_page_button)
+        page_row.addWidget(self.clear_button)
+        page_row.addStretch()
+        page_row.addWidget(self.previous_button)
+        page_row.addWidget(self.page_label)
+        page_row.addWidget(self.next_button)
+        layout.addLayout(page_row)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("电脑保存位置"))
+        self.output_edit = QLineEdit(default_output)
+        self.output_edit.setPlaceholderText("选择电脑上的保存根目录")
+        output_button = QPushButton("浏览…")
+        output_button.setObjectName("browseButton")
+        output_button.clicked.connect(self._choose_output)
+        output_row.addWidget(self.output_edit, 1)
+        output_row.addWidget(output_button)
+        layout.addLayout(output_row)
+
+        action_row = QHBoxLayout()
+        cancel_button = QPushButton("取消")
+        cancel_button.setObjectName("dialogSecondary")
+        cancel_button.clicked.connect(self.reject)
+        self.download_selected_button = QPushButton("下载所选")
+        self.download_selected_button.setObjectName("dialogPrimary")
+        self.download_selected_button.clicked.connect(self._download_selected)
+        self.download_all_button = QPushButton(f"下载全部 {len(self.records)} 张")
+        self.download_all_button.setObjectName("dialogPrimary")
+        self.download_all_button.clicked.connect(self._download_all)
+        action_row.addStretch()
+        action_row.addWidget(cancel_button)
+        action_row.addWidget(self.download_selected_button)
+        action_row.addWidget(self.download_all_button)
+        layout.addLayout(action_row)
+
+        self._refresh_page()
+
+    @staticmethod
+    def _format_size(value: object) -> str:
+        if value is None:
+            return "未知"
+        size = float(value)
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+            size /= 1024
+        return "未知"
+
+    @staticmethod
+    def _format_modified(value: object) -> str:
+        if value is None:
+            return "未知"
+        try:
+            return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M")
+        except (OSError, OverflowError, TypeError, ValueError):
+            return "未知"
+
+    def _current_page_records(self) -> list[dict[str, object]]:
+        start = self.page * self.PAGE_SIZE
+        return self.filtered_records[start : start + self.PAGE_SIZE]
+
+    @Slot(str)
+    def _apply_filter(self, query: str) -> None:
+        normalized = query.strip().casefold()
+        self.filtered_records = [
+            record
+            for record in self.records
+            if not normalized
+            or normalized in str(record.get("remote_path") or "").casefold()
+        ]
+        self.page = 0
+        self._refresh_page()
+
+    def _refresh_page(self) -> None:
+        page_count = max(1, (len(self.filtered_records) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        self.page = min(self.page, page_count - 1)
+        current = self._current_page_records()
+        self._updating_table = True
+        try:
+            self.table.setRowCount(len(current))
+            for row, record in enumerate(current):
+                remote = str(record.get("remote_path") or "")
+                selected = QTableWidgetItem("")
+                selected.setData(Qt.ItemDataRole.UserRole, remote)
+                selected.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                selected.setCheckState(
+                    Qt.CheckState.Checked
+                    if remote in self.selected_paths
+                    else Qt.CheckState.Unchecked
+                )
+                self.table.setItem(row, 0, selected)
+                values = (
+                    str(record.get("file_name") or PurePosixPath(remote).name),
+                    str(PurePosixPath(remote).parent),
+                    self._format_modified(record.get("modified_epoch_seconds")),
+                    self._format_size(record.get("size_bytes")),
+                )
+                for column, value in enumerate(values, start=1):
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(remote)
+                    self.table.setItem(row, column, item)
+        finally:
+            self._updating_table = False
+        self.page_label.setText(
+            f"第 {self.page + 1}/{page_count} 页 · 筛选结果 {len(self.filtered_records)} 张"
+        )
+        self.previous_button.setEnabled(self.page > 0)
+        self.next_button.setEnabled(self.page + 1 < page_count)
+        self._update_selection_controls()
+
+    def _update_selection_controls(self) -> None:
+        self.selection_label.setText(f"已选择 {len(self.selected_paths)} 张")
+        self.download_selected_button.setText(f"下载所选 {len(self.selected_paths)} 张")
+        has_records = bool(self.records)
+        self.download_all_button.setEnabled(has_records)
+        self.download_selected_button.setEnabled(bool(self.selected_paths))
+
+    @Slot(QTableWidgetItem)
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_table or item.column() != 0:
+            return
+        remote = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if item.checkState() == Qt.CheckState.Checked:
+            self.selected_paths.add(remote)
+        else:
+            self.selected_paths.discard(remote)
+        self._update_selection_controls()
+
+    def _select_current_page(self) -> None:
+        self.selected_paths.update(
+            str(record.get("remote_path") or "")
+            for record in self._current_page_records()
+        )
+        self.selected_paths.discard("")
+        self._refresh_page()
+
+    def _clear_selection(self) -> None:
+        self.selected_paths.clear()
+        self._refresh_page()
+
+    def _previous_page(self) -> None:
+        if self.page > 0:
+            self.page -= 1
+            self._refresh_page()
+
+    def _next_page(self) -> None:
+        page_count = max(1, (len(self.filtered_records) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        if self.page + 1 < page_count:
+            self.page += 1
+            self._refresh_page()
+
+    def _choose_output(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "选择手机图片保存位置",
+            self.output_edit.text(),
+        )
+        if selected:
+            self.output_edit.setText(selected)
+
+    def _accept_records(self, records: list[dict[str, object]]) -> None:
+        output = self.output_edit.text().strip()
+        if not output:
+            QMessageBox.information(self, "请选择保存位置", "请先选择电脑上的保存根目录。")
+            return
+        if not records:
+            QMessageBox.information(self, "没有图片", "没有可下载的手机图片。")
+            return
+        self._choices = {"records": records, "outputRoot": output}
+        self.accept()
+
+    def _download_selected(self) -> None:
+        self._accept_records(
+            [
+                record
+                for record in self.records
+                if str(record.get("remote_path") or "") in self.selected_paths
+            ]
+        )
+
+    def _download_all(self) -> None:
+        self._accept_records(list(self.records))
+
+    def choices(self) -> dict[str, object]:
+        return dict(self._choices)
 
 
 class MediaReviewDialog(QDialog):
@@ -719,6 +1058,7 @@ class MainWindow(QMainWindow):
         self.source_path = ""
         self.icon_path = ""
         self.bundle_path = ""
+        self._open_path = ""
         self._selected_device_serial: str | None = None
         self._active_device_serial: str | None = None
         self._active_device_display = ""
@@ -817,9 +1157,13 @@ class MainWindow(QMainWindow):
         self.device_combo.currentIndexChanged.connect(self._on_device_selection_changed)
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self._refresh_devices)
+        self.image_export_button = QPushButton("导出手机图片")
+        self.image_export_button.setObjectName("secondaryAction")
+        self.image_export_button.clicked.connect(self._start_phone_image_list)
         device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo, 1)
         device_layout.addWidget(self.refresh_button)
+        device_layout.addWidget(self.image_export_button)
         configuration_column.addWidget(self.device_frame)
         workflow_column.addLayout(configuration_column)
 
@@ -969,6 +1313,46 @@ class MainWindow(QMainWindow):
             QDialog#mediaReviewDialog {
                 background: #f4f7fb;
                 color: #0f172a;
+            }
+            QDialog#phoneImageDialog {
+                background: #f4f7fb;
+                color: #0f172a;
+            }
+            QLabel#imageExportSummary {
+                color: #17233b;
+                font-size: 16px;
+                font-weight: 750;
+                padding: 2px 0;
+            }
+            QLabel#selectionBadge {
+                background: #e8f7f2;
+                color: #087763;
+                border: 1px solid #b9ded4;
+                border-radius: 9px;
+                padding: 6px 10px;
+                font-weight: 700;
+            }
+            QTableWidget#phoneImageTable {
+                background: white;
+                alternate-background-color: #f8fafc;
+                border: 1px solid #dce5ef;
+                border-radius: 11px;
+                gridline-color: #e7edf4;
+                selection-background-color: #dff4ed;
+                selection-color: #17233b;
+            }
+            QTableWidget#phoneImageTable::item {
+                padding: 6px;
+                border: 0;
+            }
+            QHeaderView::section {
+                background: #edf2f7;
+                color: #42536b;
+                border: 0;
+                border-right: 1px solid #dce5ef;
+                border-bottom: 1px solid #dce5ef;
+                padding: 8px;
+                font-weight: 700;
             }
             QGroupBox#mediaGroup {
                 background: white;
@@ -1359,6 +1743,136 @@ class MainWindow(QMainWindow):
             message = "每个窗口必须单独选择一台手机"
         self.device_combo.setToolTip(message)
         self.prepare_button.setToolTip(message)
+        self.image_export_button.setToolTip(
+            f"{message}；独立读取共享存储图片，不影响 APK 取证流程"
+        )
+
+    def _start_phone_image_list(self) -> None:
+        serial = self.device_combo.currentData()
+        if not serial:
+            QMessageBox.information(
+                self,
+                "请选择手机",
+                "请先连接手机、开启 USB 调试并选择一台已授权设备。",
+            )
+            return
+        self._active_device_serial = str(serial)
+        self._active_device_display = self.device_combo.currentText()
+        self._set_busy(True)
+        self.progress.setValue(0)
+        self.status_badge.setText("读取图片")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText(
+            f"正在读取手机共享存储图片清单 ｜ 目标：{self._active_device_display}"
+        )
+        self.thread = QThread(self)
+        self.worker = PhoneImageListWorker(str(serial))
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.succeeded.connect(self._on_phone_image_list_ready)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_phone_image_list_ready(self, result: object) -> None:
+        self._set_busy(False)
+        listing = dict(result)
+        count = int(listing.get("imageCount") or 0)
+        self.progress.setValue(100)
+        if not count:
+            self.status_badge.setText("没有图片")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText("手机共享存储中没有发现支持的图片文件。")
+            self.detail_label.setText(
+                "扫描范围：/sdcard；应用私有目录不会绕过 Android 权限读取。"
+            )
+            return
+        self.status_badge.setText("图片清单就绪")
+        self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+        self.status_text.setText(f"已发现 {count} 张图片，可筛选或直接下载全部。")
+        default_output = str(
+            self.settings.value("image_export_output", Path.home() / "Desktop")
+        )
+        dialog = PhoneImageExportDialog(listing, default_output, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status_text.setText("已取消手机图片导出，手机文件未发生变化。")
+            return
+        choices = dialog.choices()
+        output_root = str(choices["outputRoot"])
+        records = [dict(record) for record in choices["records"]]
+        serial = str(listing["serial"])
+        device = dict(listing.get("device") or {})
+        display = (
+            f"{device.get('model') or 'Android 手机'} · "
+            f"{serial or '序列号未确认'}"
+        )
+        self.settings.setValue("image_export_output", output_root)
+        self._run_after_current_thread(
+            lambda: self._start_phone_image_download(
+                serial,
+                display,
+                records,
+                output_root,
+            )
+        )
+
+    def _start_phone_image_download(
+        self,
+        serial: str,
+        display: str,
+        records: list[dict[str, object]],
+        output_root: str,
+    ) -> None:
+        self._active_device_serial = serial
+        self._active_device_display = display
+        self._set_busy(True)
+        self.progress.setValue(0)
+        self.status_badge.setText("下载图片")
+        self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
+        self.status_text.setText(f"准备下载 {len(records)} 张手机图片 ｜ 目标：{display}")
+        self.thread = QThread(self)
+        self.worker = PhoneImageDownloadWorker(serial, records, output_root)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.succeeded.connect(self._on_phone_image_export_success)
+        self.worker.failed.connect(self._on_failure)
+        self.worker.succeeded.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    @Slot(object)
+    def _on_phone_image_export_success(self, result: object) -> None:
+        self._set_busy(False)
+        export = dict(result)
+        output_path = str(export["outputPath"])
+        copied = int(export.get("copiedCount") or 0)
+        failed = int(export.get("failedCount") or 0)
+        self._open_path = output_path
+        self.open_button.setText("打开图片文件夹")
+        self.open_button.setVisible(True)
+        self.progress.setValue(100)
+        if failed:
+            self.status_badge.setText("部分完成")
+            self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
+            self.status_text.setText(f"图片下载完成：成功 {copied} 张，失败 {failed} 张。")
+        else:
+            self.status_badge.setText("图片已下载")
+            self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+            self.status_text.setText(f"{copied} 张手机图片已下载到电脑。")
+        self.detail_label.setText(
+            f"保存位置：{output_path}\n"
+            f"成功：{copied} 张 · 失败：{failed} 张\n\n"
+            "该功能只复制手机共享存储图片，没有删除或修改手机文件。"
+        )
 
     @Slot(int, str)
     def _on_progress(self, value: int, message: str) -> None:
@@ -1400,6 +1914,7 @@ class MainWindow(QMainWindow):
             "完成后点击“截图/录屏完成 · 记录边界”，程序会继续媒体审查和证据包生成。"
         )
         self.bundle_path = bundle
+        self._open_path = bundle
         self._capture_bundle_path = bundle
         self._capture_device_serial = str(prepare_result.get("deviceSerial") or "")
         self._capture_device_display = (
@@ -1411,6 +1926,7 @@ class MainWindow(QMainWindow):
         self.capture_button.setVisible(True)
         self.capture_button.setEnabled(True)
         self.open_button.setVisible(True)
+        self.open_button.setText("打开交接包")
 
     @Slot(object)
     def _on_low_target_sdk_confirmation_required(self, details: object) -> None:
@@ -1672,6 +2188,7 @@ class MainWindow(QMainWindow):
                 cleanup_media_review(str(self._finish_review["reviewRoot"]))
         self._finish_review = None
         self.bundle_path = str(final["packagePath"])
+        self._open_path = self.bundle_path
         self._finish_bundle_path = ""
         self._capture_bundle_path = ""
         self._capture_completed = True
@@ -1691,6 +2208,7 @@ class MainWindow(QMainWindow):
         self.finish_button.setText("完成已有取证")
         self.finish_button.setEnabled(True)
         self.open_button.setVisible(True)
+        self.open_button.setText("打开证据包")
 
     @Slot(str, str)
     def _on_failure(self, message: str, detail: str) -> None:
@@ -1711,6 +2229,7 @@ class MainWindow(QMainWindow):
             not busy and bool(self._capture_bundle_path) and not self._capture_completed
         )
         self.finish_button.setEnabled(not busy)
+        self.image_export_button.setEnabled(not busy)
 
     def _reset_capture_state(self) -> None:
         self._capture_bundle_path = ""
@@ -1738,8 +2257,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, callback)
 
     def _open_bundle(self) -> None:
-        if self.bundle_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self.bundle_path))
+        target = self._open_path or self.bundle_path
+        if target:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
     @staticmethod
     def _local_drop_paths(event: QDragEnterEvent | QDropEvent) -> list[Path]:

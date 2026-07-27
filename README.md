@@ -8,7 +8,7 @@
 - ZIP 结构、CRC、重复条目、越界路径、加密条目和异常压缩比。
 - 包名、应用名、版本、SDK、权限和启动 Activity。
 - APK 签名及签名证书 SHA-256；优先使用 Android SDK `apksigner`，找不到时用内置解析器提取证书并明确标记“未完整验证”。
-- XAPK 的 `manifest.json`、base APK、split 文件、各 split SHA-256 及签名一致性。
+- XAPK 的 `manifest.json`、base APK、split 文件、各 split SHA-256 及签名一致性。若缺少 `manifest.json`，只有在内层 manifest 能唯一确认一个 base，且全部 APK 的包名、版本、split 名称和签名相互一致时，才自动重建分包清单。
 - APKM 的 `info.json`、base APK、split 文件、各 split SHA-256 及签名一致性。
 - 图标格式、尺寸和是否为正方形。
 

@@ -639,6 +639,159 @@ def _verify_split_signatures(
     }
 
 
+def _read_inferred_xapk(
+    archive: zipfile.ZipFile,
+    apkanalyzer: Path | None,
+    apksigner: Path | None,
+    findings: list[Finding],
+    progress: Progress | None,
+) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    """Infer a raw split archive only when its APK manifests form one provable set."""
+
+    names = archive.namelist()
+    unsafe_apks = [
+        name
+        for name in names
+        if name.lower().endswith(".apk") and not _safe_member_name(name)
+    ]
+    if unsafe_apks:
+        raise ScanFailure(f"XAPK 包含不安全的 APK 路径：{unsafe_apks[0]}")
+    apk_names = sorted(
+        {
+            name
+            for name in names
+            if name.lower().endswith(".apk") and _safe_member_name(name)
+        }
+    )
+    if not apk_names:
+        raise ScanFailure("XAPK 缺少 manifest.json，且内部没有找到 APK。")
+
+    with tempfile.TemporaryDirectory(prefix="apkba-xapk-inferred-") as temporary:
+        temporary_root = Path(temporary)
+        parsed: list[dict[str, Any]] = []
+        parser_names: set[str] = set()
+        _progress(progress, 48, "从内层 APK manifest 推断分包结构…")
+        for index, file_name in enumerate(apk_names):
+            apk_path = temporary_root / f"manifest-{index:04d}.apk"
+            info = archive.getinfo(file_name)
+            with (
+                archive.open(info) as input_stream,
+                apk_path.open("wb") as output_stream,
+            ):
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            manifest, parser_name = _parse_apk_manifest(
+                apk_path, apkanalyzer, findings
+            )
+            parser_names.add(parser_name)
+            with archive.open(info) as stream:
+                digest = _hash_stream(stream)
+            parsed.append(
+                {
+                    "file": file_name,
+                    "path": apk_path,
+                    "manifest": manifest,
+                    "sizeBytes": info.file_size,
+                    "sha256": digest,
+                }
+            )
+
+        base_candidates = [
+            item for item in parsed if not item["manifest"].get("splitName")
+        ]
+        if len(base_candidates) != 1:
+            raise ScanFailure(
+                "XAPK 缺少 manifest.json，且无法从内层 manifest 唯一确认 base APK。"
+            )
+        base = base_candidates[0]
+        base_manifest = base["manifest"]
+        base_package = str(base_manifest.get("packageName") or "")
+        base_version = base_manifest.get("versionCode")
+        if not base_package or base_version is None:
+            raise ScanFailure(
+                "XAPK 缺少 manifest.json，且 base APK 未提供可核对的包名或版本号。"
+            )
+
+        split_ids: set[str] = set()
+        split_rows: list[dict[str, Any]] = []
+        for item in parsed:
+            manifest = item["manifest"]
+            package_name = str(manifest.get("packageName") or "")
+            version_code = manifest.get("versionCode")
+            if package_name != base_package:
+                raise ScanFailure(
+                    "XAPK 缺少 manifest.json，且内层 APK 包名不一致："
+                    f"{item['file']}={package_name or 'missing'}；base={base_package}。"
+                )
+            if version_code is None or str(version_code) != str(base_version):
+                raise ScanFailure(
+                    "XAPK 缺少 manifest.json，且内层 APK 版本号不一致："
+                    f"{item['file']}={version_code!s}；base={base_version!s}。"
+                )
+            split_id = (
+                "base"
+                if item is base
+                else str(manifest.get("splitName") or "").strip()
+            )
+            if not split_id:
+                raise ScanFailure(
+                    f"XAPK 无法确认内层分包名称：{item['file']}"
+                )
+            if split_id in split_ids:
+                raise ScanFailure(
+                    f"XAPK 内层 manifest 存在重复分包名称：{split_id}"
+                )
+            split_ids.add(split_id)
+            split_rows.append(
+                {
+                    "id": split_id,
+                    "file": item["file"],
+                    "sizeBytes": item["sizeBytes"],
+                    "sha256": item["sha256"],
+                }
+            )
+
+        app = dict(base_manifest)
+        app["nativeCode"] = _native_code_record(base["path"], findings)
+        _progress(progress, 66, "验证推断出的 XAPK split 签名…")
+        signature_record = _verify_split_signatures(
+            archive,
+            temporary_root,
+            split_rows,
+            str(base["file"]),
+            base["path"],
+            apksigner,
+            findings,
+            "XAPK",
+        )
+
+    findings.append(
+        Finding(
+            "warning",
+            "xapk.manifest_inferred",
+            "XAPK 缺少 manifest.json；已根据内层 APK 的包名、版本、split 名称和签名"
+            "重建分包清单。",
+        )
+    )
+    bundle = {
+        "bundleFormat": "manifest_inferred_xapk",
+        "manifestInferred": True,
+        "xapkVersion": None,
+        "baseApk": str(base["file"]),
+        "splitConfigs": [
+            row["id"] for row in split_rows if str(row["id"]).startswith("config.")
+        ],
+        "splits": split_rows,
+        "undeclaredApks": [],
+        "totalSize": sum(row["sizeBytes"] for row in split_rows),
+    }
+    parser_name = (
+        next(iter(parser_names))
+        if len(parser_names) == 1
+        else "+".join(sorted(parser_names))
+    )
+    return app, bundle, parser_name, signature_record
+
+
 def _read_xapk(
     source: Path,
     apkanalyzer: Path | None,
@@ -649,8 +802,10 @@ def _read_xapk(
     with zipfile.ZipFile(source) as archive:
         try:
             manifest_info = archive.getinfo("manifest.json")
-        except KeyError as error:
-            raise ScanFailure("XAPK 缺少根目录 manifest.json。") from error
+        except KeyError:
+            return _read_inferred_xapk(
+                archive, apkanalyzer, apksigner, findings, progress
+            )
         if manifest_info.file_size > MAX_XAPK_MANIFEST_BYTES:
             raise ScanFailure("XAPK manifest.json 异常过大。")
         try:

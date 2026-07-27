@@ -286,6 +286,71 @@ def test_xapk_saved_with_apks_extension_is_detected_from_contents(tmp_path: Path
     )
 
 
+def test_xapk_without_manifest_is_inferred_from_inner_apk_manifests(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "raw-splits.xapk"
+    icon = tmp_path / "icon.png"
+    base = tmp_path / "com.example.fixture.apk"
+    arm64 = tmp_path / "config.arm64_v8a.apk"
+    xxhdpi = tmp_path / "config.xxhdpi.apk"
+    make_apk(base, REQUIRED_SPLIT_MANIFEST)
+    make_apk(
+        arm64,
+        MANIFEST.replace("<manifest ", '<manifest split="config.arm64_v8a" '),
+    )
+    make_apk(
+        xxhdpi,
+        MANIFEST.replace("<manifest ", '<manifest split="config.xxhdpi" '),
+    )
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(base, base.name)
+        archive.write(arm64, arm64.name)
+        archive.write(xxhdpi, xxhdpi.name)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "warning"
+    assert report["app"]["packageName"] == "com.example.fixture"
+    assert report["xapk"]["bundleFormat"] == "manifest_inferred_xapk"
+    assert report["xapk"]["manifestInferred"] is True
+    assert report["xapk"]["baseApk"] == base.name
+    assert [row["id"] for row in report["xapk"]["splits"]] == [
+        "base",
+        "config.arm64_v8a",
+        "config.xxhdpi",
+    ]
+    assert any(
+        item["code"] == "xapk.manifest_inferred" for item in report["findings"]
+    )
+    assert not report["blockers"]
+
+
+def test_xapk_without_manifest_blocks_mismatched_inner_package(tmp_path: Path) -> None:
+    source = tmp_path / "mixed-splits.xapk"
+    icon = tmp_path / "icon.png"
+    base = tmp_path / "com.example.fixture.apk"
+    unrelated = tmp_path / "config.arm64_v8a.apk"
+    make_apk(base)
+    make_apk(
+        unrelated,
+        MANIFEST.replace(
+            'package="com.example.fixture"',
+            'package="com.example.unrelated"',
+        ).replace("<manifest ", '<manifest split="config.arm64_v8a" '),
+    )
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(base, base.name)
+        archive.write(unrelated, unrelated.name)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "blocked"
+    assert any("内层 APK 包名不一致" in blocker for blocker in report["blockers"])
+
+
 def test_apkm_inventory_and_base_manifest(tmp_path: Path) -> None:
     base = tmp_path / "base.apk"
     split = tmp_path / "split_config.arm64_v8a.apk"

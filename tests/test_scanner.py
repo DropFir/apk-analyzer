@@ -247,6 +247,45 @@ def test_xapk_saved_with_apk_extension_is_detected_from_contents(tmp_path: Path)
     )
 
 
+def test_xapk_saved_with_apks_extension_is_detected_from_contents(tmp_path: Path) -> None:
+    base = tmp_path / "hu.gabor.carculator.apk"
+    density = tmp_path / "config.mdpi.apk"
+    source = tmp_path / "carculator_1.0.apks"
+    icon = tmp_path / "icon.png"
+    make_apk(base)
+    make_apk(density, MANIFEST.replace("<manifest ", '<manifest split="config.mdpi" '))
+    xapk_manifest = {
+        "xapk_version": 2,
+        "name": "CarCulator",
+        "package_name": "com.example.fixture",
+        "version_name": "2.4.1",
+        "version_code": "241",
+        "split_apks": [
+            {"id": "base", "file": base.name},
+            {"id": "config.mdpi", "file": density.name},
+        ],
+    }
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(xapk_manifest))
+        archive.write(base, base.name)
+        archive.write(density, density.name)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["source"]["format"] == "xapk"
+    assert report["source"]["declaredFormat"] == "apks"
+    assert report["app"]["applicationLabel"] == "CarCulator"
+    assert report["xapk"]["baseApk"] == base.name
+    assert [row["id"] for row in report["xapk"]["splits"]] == [
+        "base",
+        "config.mdpi",
+    ]
+    assert any(
+        item["code"] == "source.extension_mismatch" for item in report["findings"]
+    )
+
+
 def test_apkm_inventory_and_base_manifest(tmp_path: Path) -> None:
     base = tmp_path / "base.apk"
     split = tmp_path / "split_config.arm64_v8a.apk"

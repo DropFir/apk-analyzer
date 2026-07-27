@@ -353,10 +353,10 @@ def _plain_manifest_from_archive(path: Path) -> dict[str, Any] | None:
 
 
 def _detect_source_format(path: Path) -> str:
-    """Recognize bundle containers whose downloaded extension says APK."""
+    """Recognize bundle containers even when the downloaded extension is wrong."""
 
     declared = path.suffix.lower().lstrip(".")
-    if declared != "apk":
+    if path.suffix.lower() not in SUPPORTED_SOURCES:
         return declared
     try:
         with zipfile.ZipFile(path) as archive:

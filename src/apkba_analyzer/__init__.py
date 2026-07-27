@@ -1,3 +1,3 @@
-"""APKBA APK/XAPK intake analyzer."""
+"""APKBA APK/XAPK/APKM/APKS intake analyzer."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

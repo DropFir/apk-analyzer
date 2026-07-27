@@ -56,6 +56,24 @@ def test_bundle_copy_uses_detected_source_format_extension(tmp_path: Path) -> No
     assert handoff["source"]["format"] == "xapk"
 
 
+def test_bundle_copy_preserves_apks_format_extension(tmp_path: Path) -> None:
+    source = tmp_path / "downloaded_pending.apk"
+    icon = tmp_path / "art.png"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", MANIFEST)
+    Image.new("RGB", (512, 512), "#087763").save(icon)
+    report = scan_package(source, icon, profile="quick")
+    report["source"]["format"] = "apks"
+
+    bundle = create_intake_bundle(report, source, icon, output)
+
+    assert (bundle / "downloaded_pending.apks").is_file()
+    handoff = json.loads((bundle / "agent1_handoff.json").read_text(encoding="utf-8"))
+    assert handoff["source"]["path"] == "downloaded_pending.apks"
+    assert handoff["source"]["format"] == "apks"
+
+
 def test_optional_developer_text_is_copied_and_recorded(tmp_path: Path) -> None:
     source = tmp_path / "bundle.apk"
     icon = tmp_path / "art.png"

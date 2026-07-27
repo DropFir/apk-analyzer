@@ -1,4 +1,4 @@
-"""Offline, non-executing APK/XAPK/APKM intake scanner."""
+"""Offline, non-executing APK/XAPK/APKM/APKS intake scanner."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ Progress = Callable[[int, str], None]
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 PHONE_LAUNCHER_CATEGORY = "android.intent.category.LAUNCHER"
 LEANBACK_LAUNCHER_CATEGORY = "android.intent.category.LEANBACK_LAUNCHER"
-SUPPORTED_SOURCES = {".apk", ".xapk", ".apkm"}
+SUPPORTED_SOURCES = {".apk", ".xapk", ".apkm", ".apks"}
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_XAPK_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -360,17 +360,30 @@ def _detect_source_format(path: Path) -> str:
         return declared
     try:
         with zipfile.ZipFile(path) as archive:
-            root_names = {
+            all_names = {
                 name
                 for name in archive.namelist()
+                if not name.endswith("/")
+            }
+            root_names = {
+                name
+                for name in all_names
                 if len(PurePosixPath(name).parts) == 1 and not name.endswith("/")
             }
     except (OSError, zipfile.BadZipFile):
         return declared
     root_apks = {name for name in root_names if name.lower().endswith(".apk")}
-    if "manifest.json" in root_names and root_apks:
+    all_apks = {name for name in all_names if name.lower().endswith(".apk")}
+    root_names_lower = {name.lower() for name in root_names}
+    if (
+        "toc.pb" in root_names_lower
+        or "meta.sai_v1.json" in root_names_lower
+        or "meta.sai_v2.json" in root_names_lower
+    ) and all_apks:
+        return "apks"
+    if "manifest.json" in root_names_lower and root_apks:
         return "xapk"
-    if "info.json" in root_names and "base.apk" in root_names:
+    if "info.json" in root_names_lower and "base.apk" in root_names_lower:
         return "apkm"
     return declared
 
@@ -799,6 +812,226 @@ def _apkm_split_id(file_name: str) -> str:
     return stem
 
 
+def _apks_split_id(file_name: str, modules: set[str], base_file: str) -> str:
+    """Translate bundletool APKS filenames into the generic split-id model."""
+
+    if file_name == base_file:
+        return "base"
+    name = PurePosixPath(file_name).name
+    stem = name[:-4] if name.lower().endswith(".apk") else name
+    if stem.endswith("-master"):
+        return stem[: -len("-master")]
+    for module in sorted(modules, key=len, reverse=True):
+        prefix = f"{module}-"
+        if stem.startswith(prefix):
+            qualifier = stem[len(prefix) :]
+            return (
+                f"config.{qualifier}"
+                if module == "base"
+                else f"{module}.config.{qualifier}"
+            )
+    raise ScanFailure(f"APKS 中无法识别分包文件名：{file_name}")
+
+
+def _read_apks(
+    source: Path,
+    apkanalyzer: Path | None,
+    apksigner: Path | None,
+    findings: list[Finding],
+    progress: Progress | None,
+) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+    """Read bundletool, SAI, or device-specific APKS without executing contents."""
+
+    with zipfile.ZipFile(source) as archive:
+        names = [name for name in archive.namelist() if not name.endswith("/")]
+        root_names = {
+            name
+            for name in names
+            if len(PurePosixPath(name).parts) == 1
+        }
+        root_names_by_lower = {name.lower(): name for name in root_names}
+        toc_present = "toc.pb" in root_names_by_lower
+        sai_meta_file = root_names_by_lower.get("meta.sai_v2.json") or root_names_by_lower.get(
+            "meta.sai_v1.json"
+        )
+        container_kind = "bundletool" if toc_present else "sai" if sai_meta_file else "generic"
+        if any(name.lower().startswith("asset-slices/") for name in names):
+            raise ScanFailure(
+                "该 bundletool APKS 含有定向 asset-slices；当前版本不能仅凭文件名"
+                "安全选择纹理/资源包，请先用 bundletool 为目标手机提取设备专用 APKS。"
+            )
+
+        unsafe_apks = [
+            name
+            for name in names
+            if name.lower().endswith(".apk") and not _safe_member_name(name)
+        ]
+        if unsafe_apks:
+            raise ScanFailure(f"APKS 包含不安全的 APK 路径：{unsafe_apks[0]}")
+        apk_names = sorted(
+            {
+                name
+                for name in names
+                if name.lower().endswith(".apk") and _safe_member_name(name)
+            }
+        )
+        if not apk_names:
+            raise ScanFailure("APKS 中没有找到 APK。")
+
+        universal_candidates = [
+            name
+            for name in apk_names
+            if PurePosixPath(name).name.lower() == "universal.apk"
+        ]
+        if len(universal_candidates) > 1:
+            raise ScanFailure("APKS 包含多个 universal.apk，无法安全判断安装目标。")
+
+        if universal_candidates:
+            base_file = universal_candidates[0]
+            selected_names = [base_file]
+            mode = "universal"
+        else:
+            base_candidates = [
+                name
+                for name in apk_names
+                if PurePosixPath(name).name.lower() in {"base-master.apk", "base.apk"}
+            ]
+            if len(base_candidates) == 1:
+                base_file = base_candidates[0]
+                family = PurePosixPath(base_file).parent
+                selected_names = [
+                    name for name in apk_names if PurePosixPath(name).parent == family
+                ]
+                mode = "split"
+            elif not base_candidates and len(apk_names) == 1:
+                base_file = apk_names[0]
+                selected_names = [base_file]
+                mode = "standalone"
+            elif not base_candidates:
+                raise ScanFailure(
+                    "APKS 仅包含多个 standalone 设备变体，无法离线安全选择；"
+                    "请提供 universal APK 或仅包含目标设备变体的 APKS。"
+                )
+            else:
+                raise ScanFailure("APKS 包含多个 base APK，无法安全判断分包集合。")
+
+        modules: set[str] = set()
+        if container_kind == "bundletool":
+            modules = {
+                PurePosixPath(name).name[: -len("-master.apk")]
+                for name in selected_names
+                if PurePosixPath(name).name.lower().endswith("-master.apk")
+            }
+            modules.add("base")
+        split_rows: list[dict[str, Any]] = []
+        for file_name in selected_names:
+            info = archive.getinfo(file_name)
+            with archive.open(info) as stream:
+                digest = _hash_stream(stream)
+            split_id = (
+                _apks_split_id(file_name, modules, base_file)
+                if container_kind == "bundletool"
+                else (
+                    "base"
+                    if file_name == base_file
+                    else _apkm_split_id(file_name)
+                )
+            )
+            split_rows.append(
+                {
+                    "id": split_id,
+                    "file": file_name,
+                    "sizeBytes": info.file_size,
+                    "sha256": digest,
+                }
+            )
+
+        metadata: dict[str, Any] = {}
+        if sai_meta_file:
+            metadata_info = archive.getinfo(sai_meta_file)
+            if metadata_info.file_size > MAX_XAPK_MANIFEST_BYTES:
+                raise ScanFailure("APKS SAI 元数据异常过大。")
+            try:
+                parsed = json.loads(archive.read(metadata_info).decode("utf-8-sig"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ScanFailure(f"APKS SAI 元数据无法解析：{error}") from error
+            if isinstance(parsed, dict):
+                metadata = parsed
+
+        with tempfile.TemporaryDirectory(prefix="apkba-apks-") as temporary:
+            temporary_root = Path(temporary)
+            base_path = temporary_root / "base.apk"
+            with archive.open(base_file) as source_stream, base_path.open("wb") as target_stream:
+                shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+            _progress(progress, 52, "解析 APKS base APK manifest…")
+            app, parser_name = _parse_apk_manifest(base_path, apkanalyzer, findings)
+            app["nativeCode"] = _native_code_record(base_path, findings)
+            _progress(progress, 66, "验证 APKS split 签名…")
+            signature_record = _verify_split_signatures(
+                archive,
+                temporary_root,
+                split_rows,
+                base_file,
+                base_path,
+                apksigner,
+                findings,
+                "APKS",
+            )
+
+    top_package = metadata.get("package")
+    top_version_code = metadata.get("version_code")
+    if top_package and app.get("packageName") and top_package != app["packageName"]:
+        findings.append(
+            Finding(
+                "error",
+                "apks.package_mismatch",
+                "APKS SAI 元数据包名与 base APK manifest 不一致。",
+                f"APKS={top_package}; base={app['packageName']}",
+            )
+        )
+    if (
+        top_version_code is not None
+        and app.get("versionCode") is not None
+        and str(top_version_code) != str(app["versionCode"])
+    ):
+        findings.append(
+            Finding(
+                "warning",
+                "apks.version_code_mismatch",
+                "APKS SAI 元数据版本号与 base APK manifest 不一致。",
+                f"APKS={top_version_code}; base={app['versionCode']}",
+            )
+        )
+    app.update(
+        {
+            "applicationLabel": metadata.get("label") or app.get("applicationLabel"),
+            "packageName": top_package or app.get("packageName"),
+            "versionName": metadata.get("version_name") or app.get("versionName"),
+            "versionCode": _number_or_text(top_version_code)
+            if top_version_code is not None
+            else app.get("versionCode"),
+            "minSdk": _number_or_text(metadata.get("min_sdk")) or app.get("minSdk"),
+            "targetSdk": _number_or_text(metadata.get("target_sdk"))
+            or app.get("targetSdk"),
+        }
+    )
+    excluded_apks = [name for name in apk_names if name not in selected_names]
+    bundle = {
+        "bundleFormat": "apks",
+        "apksContainer": container_kind,
+        "apksMode": mode,
+        "tocPresent": toc_present,
+        "saiMetaFile": sai_meta_file,
+        "baseApk": base_file,
+        "splitConfigs": [],
+        "splits": split_rows,
+        "undeclaredApks": excluded_apks,
+        "excludedApks": excluded_apks,
+        "totalSize": sum(row["sizeBytes"] for row in split_rows),
+    }
+    return app, bundle, parser_name, signature_record
+
+
 def _read_apkm(
     source: Path,
     apkanalyzer: Path | None,
@@ -916,7 +1149,7 @@ def scan_package(
     profile: str = "standard",
     progress: Progress | None = None,
 ) -> dict[str, Any]:
-    """Scan an APK/XAPK/APKM and icon without executing or modifying either input."""
+    """Scan an APK/XAPK/APKM/APKS and icon without executing or modifying either input."""
 
     source = Path(source_path).expanduser().resolve()
     icon = Path(icon_path).expanduser().resolve()
@@ -925,11 +1158,11 @@ def scan_package(
     _progress(progress, 2, "检查输入文件…")
 
     if not source.is_file():
-        raise ScanFailure(f"找不到 APK/XAPK/APKM：{source}")
+        raise ScanFailure(f"找不到 APK/XAPK/APKM/APKS：{source}")
     if not icon.is_file():
         raise ScanFailure(f"找不到图标：{icon}")
     if source.suffix.lower() not in SUPPORTED_SOURCES:
-        raise ScanFailure("源文件必须是 .apk、.xapk 或 .apkm。")
+        raise ScanFailure("源文件必须是 .apk、.xapk、.apkm 或 .apks。")
     if icon.suffix.lower() not in SUPPORTED_IMAGES:
         raise ScanFailure("图标必须是 PNG、JPG、WebP 或 AVIF。")
     if source.name.lower().endswith((".crdownload", ".part", ".tmp")):
@@ -1039,11 +1272,18 @@ def scan_package(
                 app, xapk, parser_name, signature = _read_xapk(
                     source, apkanalyzer, apksigner, findings, progress
                 )
-            else:
+            elif source_format == "apkm":
                 _progress(progress, 44, "读取 APKM base APK 与 split 清单…")
                 app, xapk, parser_name, signature = _read_apkm(
                     source, apkanalyzer, apksigner, findings, progress
                 )
+            elif source_format == "apks":
+                _progress(progress, 44, "读取 APKS toc 与设备分包清单…")
+                app, xapk, parser_name, signature = _read_apks(
+                    source, apkanalyzer, apksigner, findings, progress
+                )
+            else:
+                raise ScanFailure(f"不支持的安装包格式：{source_format}")
         except (ScanFailure, OSError, zipfile.BadZipFile) as error:
             findings.append(Finding("error", "package.parse_failed", str(error)))
 

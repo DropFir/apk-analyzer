@@ -1155,7 +1155,7 @@ class MainWindow(QMainWindow):
         cards.setVerticalSpacing(10)
         self.source_card = DropCard(
             "安装包",
-            "APK / XAPK / APKM · 拖拽或选择",
+            "APK / XAPK / APKM / APKS · 拖拽或选择",
             SUPPORTED_SOURCES,
         )
         self.icon_card = DropCard(
@@ -1644,7 +1644,7 @@ class MainWindow(QMainWindow):
         elif self.icon_path:
             self.status_badge.setText("已选择 1/2")
             self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
-            self.status_text.setText("图标已添加，再选择一个 APK/XAPK/APKM。")
+            self.status_text.setText("图标已添加，再选择一个 APK/XAPK/APKM/APKS。")
         elif self.developer_path or self.source_attribution_path:
             self.status_badge.setText("已添加可选信息")
             self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
@@ -1653,9 +1653,9 @@ class MainWindow(QMainWindow):
     def _choose_source(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择 APK/XAPK/APKM",
+            "选择 APK/XAPK/APKM/APKS",
             "",
-            "Android package (*.apk *.xapk *.apkm)",
+            "Android package (*.apk *.xapk *.apkm *.apks)",
         )
         if path:
             self.source_card.set_path(path)
@@ -1771,7 +1771,9 @@ class MainWindow(QMainWindow):
         if not self._require_capture_end_before_next_task():
             return
         if not self.source_path or not self.icon_path or not output:
-            QMessageBox.information(self, "还差一步", "请选择 APK/XAPK/APKM、图标和输出位置。")
+            QMessageBox.information(
+                self, "还差一步", "请选择 APK/XAPK/APKM/APKS、图标和输出位置。"
+            )
             return
         if not serial:
             QMessageBox.information(
@@ -2401,7 +2403,7 @@ class MainWindow(QMainWindow):
             f"截图：{final.get('screenshotCount')} 张\n"
             f"录屏：{final.get('recordingStatus')}\n"
             f"源包 SHA-256：{final.get('sourceSha256')}\n\n"
-            "原始 APK/XAPK、图标和 intake 记录均保留；"
+            "原始 APK/XAPK/APKM/APKS、图标和 intake 记录均保留；"
             "程序只清除了已完成的 pending-session。"
         )
         self.capture_button.setVisible(False)

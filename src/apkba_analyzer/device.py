@@ -815,14 +815,15 @@ def prepare_bundle(
         "status": "already_installed" if was_installed else "not_installed",
     }
     selected_splits: list[str] = []
-    if handoff["source"]["format"] in {"xapk", "apkm"}:
+    if handoff["source"]["format"] in {"xapk", "apkm", "apks"}:
         selected_splits = select_xapk_splits(report.get("xapk") or {}, device)
 
     _progress(progress, 78, "安装到已选择的手机…")
     install_started = _iso_now()
     bypass_low_target_sdk = low_target_sdk_bypass is not None
     with tempfile.TemporaryDirectory(prefix="apkba-prepare-") as temporary:
-        if handoff["source"]["format"] == "apk":
+        source_format = handoff["source"]["format"]
+        if source_format == "apk":
             install_arguments = ["install"]
             if bypass_low_target_sdk:
                 install_arguments.append("--bypass-low-target-sdk-block")
@@ -834,15 +835,26 @@ def prepare_bundle(
             )
         else:
             split_paths = _extract_splits(source, selected_splits, Path(temporary))
-            install_arguments = ["install-multiple"]
-            if bypass_low_target_sdk:
-                install_arguments.append("--bypass-low-target-sdk-block")
-            install_arguments.extend(["-r", *map(str, split_paths)])
-            install_method = (
-                "adb install-multiple --bypass-low-target-sdk-block -r"
-                if bypass_low_target_sdk
-                else "adb install-multiple -r"
-            )
+            if source_format == "apks" and len(split_paths) == 1:
+                install_arguments = ["install"]
+                if bypass_low_target_sdk:
+                    install_arguments.append("--bypass-low-target-sdk-block")
+                install_arguments.extend(["-r", str(split_paths[0])])
+                install_method = (
+                    "adb install --bypass-low-target-sdk-block -r (APKS standalone)"
+                    if bypass_low_target_sdk
+                    else "adb install -r (APKS standalone)"
+                )
+            else:
+                install_arguments = ["install-multiple"]
+                if bypass_low_target_sdk:
+                    install_arguments.append("--bypass-low-target-sdk-block")
+                install_arguments.extend(["-r", *map(str, split_paths)])
+                install_method = (
+                    "adb install-multiple --bypass-low-target-sdk-block -r"
+                    if bypass_low_target_sdk
+                    else "adb install-multiple -r"
+                )
         install = client.invoke(install_arguments, serial=serial, allow_failure=True, timeout=300)
     install_output = (install.stdout or "") + "\n" + (install.stderr or "")
     if install.returncode or not re.search(r"(?m)^Success\s*$", install_output):

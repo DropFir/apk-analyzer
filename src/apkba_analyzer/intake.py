@@ -164,7 +164,7 @@ def create_intake_bundle(
         source_format = str((report.get("source") or {}).get("format") or "").lower()
         portable_suffix = (
             f".{source_format}"
-            if source_format in {"apk", "xapk", "apkm"}
+            if source_format in {"apk", "xapk", "apkm", "apks"}
             else source.suffix.lower()
         )
         portable_source_name = _portable_name(source.stem, "source") + portable_suffix
@@ -251,7 +251,7 @@ def create_intake_bundle(
         (staging / "scan_summary.html").write_text(_summary_html(portable_report), encoding="utf-8")
         (staging / "README.txt").write_text(
             "APKBA Agent1 intake bundle\n\n"
-            "This folder contains one original APK/XAPK, one validated icon, "
+            "This folder contains one original APK/XAPK/APKM/APKS, one validated icon, "
             "optional editor-provided developer and source information, "
             "and the offline scan records.\n"
             "Point Agent1 at this folder. Agent1 still performs installation, launch, "

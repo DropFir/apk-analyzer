@@ -67,6 +67,19 @@ def test_folder_import_accepts_resource_and_develop_aliases(tmp_path: Path) -> N
     assert imported.source_info.name == "resource.txt"
 
 
+def test_wrapper_zip_accepts_apks_as_the_install_source(tmp_path: Path) -> None:
+    wrapper = tmp_path / "apks-input.zip"
+    with zipfile.ZipFile(wrapper, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("input/example.apks", b"apks fixture")
+        archive.writestr("input/icon.png", b"icon fixture")
+
+    imported = import_input_container(wrapper)
+
+    assert imported.source.name == "example.apks"
+    assert imported.icon.name == "icon.png"
+    imported.cleanup()
+
+
 def test_wrapper_zip_rejects_ambiguous_packages_and_unsafe_paths(
     tmp_path: Path,
 ) -> None:
@@ -76,7 +89,7 @@ def test_wrapper_zip_rejects_ambiguous_packages_and_unsafe_paths(
         archive.writestr("two.xapk", b"two")
         archive.writestr("icon.png", b"icon")
 
-    with pytest.raises(ScanFailure, match="多个APK/XAPK/APKM"):
+    with pytest.raises(ScanFailure, match="多个APK/XAPK/APKM/APKS"):
         import_input_container(ambiguous)
 
     unsafe = tmp_path / "unsafe.zip"

@@ -81,7 +81,7 @@ def _classify(records: list[Any], name_of: Any) -> dict[str, Any | None]:
             for record, name in files
             if Path(name).suffix.lower() in SUPPORTED_SOURCES
         ],
-        "APK/XAPK/APKM 安装包",
+        "APK/XAPK/APKM/APKS 安装包",
         required=True,
     )
     exact_icons = [

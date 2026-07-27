@@ -734,6 +734,75 @@ def test_prepare_installs_apkm_with_install_multiple(
     }
 
 
+def test_prepare_installs_apks_splits_with_install_multiple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    source = bundle / "app.apks"
+    (bundle / "app.apk").unlink()
+
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("toc.pb", b"toc")
+        archive.writestr("splits/base-master.apk", b"base")
+        archive.writestr("splits/base-arm64_v8a.apk", b"arm64")
+    handoff_path = bundle / "agent1_handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["source"].update({"path": source.name, "format": "apks"})
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    report["xapk"] = {
+        "baseApk": "splits/base-master.apk",
+        "splits": [
+            {"id": "base", "file": "splits/base-master.apk"},
+            {
+                "id": "config.arm64_v8a",
+                "file": "splits/base-arm64_v8a.apk",
+            },
+        ],
+    }
+    adb = FakePrepareAdb()
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    prepare_bundle(report, bundle, "PHONE-APKS", adb=adb)
+
+    install = next(
+        arguments for _serial, arguments in adb.calls if arguments[0] == "install-multiple"
+    )
+    assert install[:2] == ["install-multiple", "-r"]
+    assert {Path(path).name for path in install[2:]} == {
+        "base-master.apk",
+        "base-arm64_v8a.apk",
+    }
+
+
+def test_prepare_installs_single_apks_universal_with_regular_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    source = bundle / "app.apks"
+    (bundle / "app.apk").unlink()
+
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("toc.pb", b"toc")
+        archive.writestr("universal.apk", b"universal")
+    handoff_path = bundle / "agent1_handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["source"].update({"path": source.name, "format": "apks"})
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    report["xapk"] = {
+        "baseApk": "universal.apk",
+        "splits": [{"id": "base", "file": "universal.apk"}],
+    }
+    adb = FakePrepareAdb()
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    prepare_bundle(report, bundle, "PHONE-APKS-UNIVERSAL", adb=adb)
+
+    install = next(arguments for _serial, arguments in adb.calls if arguments[0] == "install")
+    assert install[:2] == ["install", "-r"]
+    assert Path(install[2]).name == "universal.apk"
+    assert not any(arguments[0] == "install-multiple" for _serial, arguments in adb.calls)
+
+
 def test_install_failure_stops_before_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -278,6 +278,124 @@ def test_apkm_inventory_and_base_manifest(tmp_path: Path) -> None:
     ]
 
 
+def test_apks_inventory_maps_bundletool_split_names(tmp_path: Path) -> None:
+    source = tmp_path / "fixture.apks"
+    icon = tmp_path / "icon.png"
+    base = tmp_path / "base-master.apk"
+    make_apk(base, REQUIRED_SPLIT_MANIFEST)
+    split_files = {
+        "base-arm64_v8a.apk": "config.arm64_v8a",
+        "base-en.apk": "config.en",
+        "base-xxhdpi.apk": "config.xxhdpi",
+        "feature-master.apk": "feature",
+        "feature-arm64_v8a.apk": "feature.config.arm64_v8a",
+    }
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("toc.pb", b"synthetic toc")
+        archive.write(base, "splits/base-master.apk")
+        for file_name, split_name in split_files.items():
+            split = tmp_path / file_name
+            make_apk(
+                split,
+                MANIFEST.replace("<manifest ", f'<manifest split="{split_name}" '),
+            )
+            archive.write(split, f"splits/{file_name}")
+        archive.writestr("standalones/standalone-arm64.apk", b"excluded alternative")
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["source"]["format"] == "apks"
+    assert report["app"]["packageName"] == "com.example.fixture"
+    assert report["xapk"]["bundleFormat"] == "apks"
+    assert report["xapk"]["apksMode"] == "split"
+    assert report["xapk"]["baseApk"] == "splits/base-master.apk"
+    assert {
+        row["id"]: row["file"] for row in report["xapk"]["splits"]
+    } == {
+        "base": "splits/base-master.apk",
+        "config.arm64_v8a": "splits/base-arm64_v8a.apk",
+        "config.en": "splits/base-en.apk",
+        "config.xxhdpi": "splits/base-xxhdpi.apk",
+        "feature": "splits/feature-master.apk",
+        "feature.config.arm64_v8a": "splits/feature-arm64_v8a.apk",
+    }
+    assert report["xapk"]["excludedApks"] == [
+        "standalones/standalone-arm64.apk"
+    ]
+
+
+def test_apks_universal_archive_is_supported(tmp_path: Path) -> None:
+    source = tmp_path / "universal.apks"
+    icon = tmp_path / "icon.png"
+    universal = tmp_path / "universal.apk"
+    make_apk(universal)
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("toc.pb", b"synthetic toc")
+        archive.write(universal, "universal.apk")
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["app"]["packageName"] == "com.example.fixture"
+    assert report["xapk"]["apksMode"] == "universal"
+    assert report["xapk"]["baseApk"] == "universal.apk"
+    assert report["xapk"]["splits"][0]["id"] == "base"
+
+
+def test_sai_apks_archive_and_metadata_are_supported(tmp_path: Path) -> None:
+    source = tmp_path / "sai-export.apks"
+    icon = tmp_path / "icon.png"
+    base = tmp_path / "base.apk"
+    arm64 = tmp_path / "split_config.arm64_v8a.apk"
+    make_apk(base)
+    make_apk(
+        arm64,
+        MANIFEST.replace("<manifest ", '<manifest split="config.arm64_v8a" '),
+    )
+    metadata = {
+        "meta_version": 2,
+        "split_apk": True,
+        "label": "SAI Fixture",
+        "package": "com.example.fixture",
+        "version_code": 241,
+        "version_name": "2.4.1",
+        "min_sdk": 23,
+        "target_sdk": 35,
+    }
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("meta.sai_v2.json", json.dumps(metadata))
+        archive.write(base, "base.apk")
+        archive.write(arm64, arm64.name)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["app"]["applicationLabel"] == "SAI Fixture"
+    assert report["xapk"]["apksContainer"] == "sai"
+    assert report["xapk"]["tocPresent"] is False
+    assert report["xapk"]["saiMetaFile"] == "meta.sai_v2.json"
+    assert [row["id"] for row in report["xapk"]["splits"]] == [
+        "base",
+        "config.arm64_v8a",
+    ]
+
+
+def test_apks_with_ambiguous_standalones_is_blocked(tmp_path: Path) -> None:
+    source = tmp_path / "ambiguous.apks"
+    icon = tmp_path / "icon.png"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("toc.pb", b"synthetic toc")
+        archive.writestr("standalones/standalone-arm64.apk", b"arm64")
+        archive.writestr("standalones/standalone-x86_64.apk", b"x86")
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "blocked"
+    assert any("多个 standalone" in blocker for blocker in report["blockers"])
+
+
 def test_archive_traversal_is_blocked(tmp_path: Path) -> None:
     source = tmp_path / "unsafe.apk"
     icon = tmp_path / "icon.png"

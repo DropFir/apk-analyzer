@@ -15,7 +15,9 @@ from apkba_analyzer.scanner import scan_package
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="APKBA offline APK/XAPK intake analyzer")
+    parser = argparse.ArgumentParser(
+        description="APKBA offline APK/XAPK/APKM/APKS intake analyzer"
+    )
     subparsers = parser.add_subparsers(dest="command")
     scan = subparsers.add_parser("scan", help="scan and create an Agent1 intake folder")
     scan.add_argument("--source", required=True, type=Path)

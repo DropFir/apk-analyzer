@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apkba-analyzer"
-version = "0.5.0"
-description = "Editor-facing APK/XAPK analyzer and end-to-end evidence packaging tool"
+version = "0.6.0"
+description = "Editor-facing APK/XAPK/APKM/APKS analyzer and evidence packaging tool"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

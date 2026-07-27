@@ -70,7 +70,17 @@ from apkba_analyzer.finish import (
     finish_preflight,
     prepare_media_review,
 )
-from apkba_analyzer.intake import SUPPORTED_DEVELOPER_FILES
+from apkba_analyzer.input_bundle import (
+    DEVELOPER_FILE_NAMES,
+    SOURCE_INFO_FILE_NAMES,
+    ImportedInputs,
+    import_input_container,
+    is_input_container,
+)
+from apkba_analyzer.intake import (
+    SUPPORTED_DEVELOPER_FILES,
+    SUPPORTED_SOURCE_INFO_FILES,
+)
 from apkba_analyzer.phone_images import export_phone_images, list_phone_images
 from apkba_analyzer.scanner import SUPPORTED_IMAGES, SUPPORTED_SOURCES
 
@@ -387,6 +397,7 @@ class PrepareWorker(QObject):
         source: str,
         icon: str,
         developer: str,
+        source_attribution: str,
         output: str,
         serial: str,
     ):
@@ -394,6 +405,7 @@ class PrepareWorker(QObject):
         self.source = source
         self.icon = icon
         self.developer = developer
+        self.source_attribution = source_attribution
         self.output = output
         self.serial = serial
         self._low_target_sdk_confirmation = threading.Event()
@@ -419,6 +431,7 @@ class PrepareWorker(QObject):
                 self.output,
                 self.serial,
                 developer_path=self.developer or None,
+                source_attribution_path=self.source_attribution or None,
                 progress=lambda value, message: self.progress.emit(value, message),
                 confirm_low_target_sdk=self._confirm_low_target_sdk,
             )
@@ -1096,6 +1109,8 @@ class MainWindow(QMainWindow):
         self.source_path = ""
         self.icon_path = ""
         self.developer_path = ""
+        self.source_attribution_path = ""
+        self._imported_inputs: list[ImportedInputs] = []
         self.bundle_path = ""
         self._open_path = ""
         self._selected_device_serial: str | None = None
@@ -1153,21 +1168,31 @@ class MainWindow(QMainWindow):
             "UTF-8 TXT · 例如：SEGA",
             SUPPORTED_DEVELOPER_FILES,
         )
+        self.source_attribution_card = DropCard(
+            "来源信息（可选）",
+            "source.txt / resource.txt · URL 或文字",
+            SUPPORTED_SOURCE_INFO_FILES,
+        )
         cards.addWidget(self.source_card, 0, 0)
         cards.addWidget(self.icon_card, 0, 1)
         cards.addWidget(self.developer_card, 0, 2)
+        cards.addWidget(self.source_attribution_card, 0, 3)
         choose_source = QPushButton("选择安装包")
         choose_icon = QPushButton("选择图标")
         choose_developer = QPushButton("选择开发者 TXT（可选）")
+        choose_source_attribution = QPushButton("选择来源 TXT（可选）")
         choose_source.clicked.connect(self._choose_source)
         choose_icon.clicked.connect(self._choose_icon)
         choose_developer.clicked.connect(self._choose_developer)
+        choose_source_attribution.clicked.connect(self._choose_source_attribution)
         cards.addWidget(choose_source, 1, 0)
         cards.addWidget(choose_icon, 1, 1)
         cards.addWidget(choose_developer, 1, 2)
+        cards.addWidget(choose_source_attribution, 1, 3)
         cards.setColumnStretch(0, 1)
         cards.setColumnStretch(1, 1)
         cards.setColumnStretch(2, 1)
+        cards.setColumnStretch(3, 1)
         input_column.addLayout(cards)
 
         self.workflow_section = QFrame()
@@ -1278,12 +1303,16 @@ class MainWindow(QMainWindow):
         self.source_card.path_changed.connect(self._set_source)
         self.icon_card.path_changed.connect(self._set_icon)
         self.developer_card.path_changed.connect(self._set_developer)
+        self.source_attribution_card.path_changed.connect(
+            self._set_source_attribution
+        )
         for drop_target in (
             scroll.viewport(),
             root,
             self.source_card,
             self.icon_card,
             self.developer_card,
+            self.source_attribution_card,
             self.output_edit,
             self.device_combo,
         ):
@@ -1586,14 +1615,28 @@ class MainWindow(QMainWindow):
         self.developer_path = path
         self._update_file_selection_status()
 
+    @Slot(str)
+    def _set_source_attribution(self, path: str) -> None:
+        self.source_attribution_path = path
+        self._update_file_selection_status()
+
     def _update_file_selection_status(self) -> None:
         if self.source_path and self.icon_path:
             self.status_badge.setText("文件已就绪")
             self.status_badge.setStyleSheet("background:#ddf7ee;color:#087763")
+            optional = []
             if self.developer_path:
-                self.status_text.setText("安装包、图标和可选开发者信息均已添加，可以开始扫描。")
+                optional.append("开发者")
+            if self.source_attribution_path:
+                optional.append("来源")
+            if optional:
+                self.status_text.setText(
+                    f"安装包和图标已就绪；可选{'、'.join(optional)}信息已添加，可以开始扫描。"
+                )
             else:
-                self.status_text.setText("安装包和图标均已添加，可以开始扫描；开发者信息可选。")
+                self.status_text.setText(
+                    "安装包和图标均已添加，可以开始扫描；来源和开发者信息均可选。"
+                )
         elif self.source_path:
             self.status_badge.setText("已选择 1/2")
             self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
@@ -1602,10 +1645,10 @@ class MainWindow(QMainWindow):
             self.status_badge.setText("已选择 1/2")
             self.status_badge.setStyleSheet("background:#fff2cf;color:#7d5800")
             self.status_text.setText("图标已添加，再选择一个 APK/XAPK/APKM。")
-        elif self.developer_path:
+        elif self.developer_path or self.source_attribution_path:
             self.status_badge.setText("已添加可选信息")
             self.status_badge.setStyleSheet("background:#e9eef5;color:#41526b")
-            self.status_text.setText("开发者信息已添加；还需要选择安装包和图标。")
+            self.status_text.setText("可选信息已添加；还需要选择安装包和图标。")
 
     def _choose_source(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1633,6 +1676,16 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.developer_card.set_path(path)
+
+    def _choose_source_attribution(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择来源信息（可选）",
+            "",
+            "Source text (*.txt)",
+        )
+        if path:
+            self.source_attribution_card.set_path(path)
 
     def _choose_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择输出位置", self.output_edit.text())
@@ -1676,9 +1729,12 @@ class MainWindow(QMainWindow):
         self.source_path = ""
         self.icon_path = ""
         self.developer_path = ""
+        self.source_attribution_path = ""
         self.source_card.clear_path()
         self.icon_card.clear_path()
         self.developer_card.clear_path()
+        self.source_attribution_card.clear_path()
+        self._release_imported_inputs()
         self.bundle_path = ""
         self._open_path = ""
         self._finish_bundle_path = ""
@@ -1692,6 +1748,11 @@ class MainWindow(QMainWindow):
         self.open_button.setVisible(False)
         self.finish_button.setText("完成已有取证")
         self.finish_button.setEnabled(True)
+
+    def _release_imported_inputs(self) -> None:
+        for imported in self._imported_inputs:
+            imported.cleanup()
+        self._imported_inputs.clear()
 
     def _require_capture_end_before_next_task(self) -> bool:
         if not self._capture_bundle_path or self._capture_completed:
@@ -1736,6 +1797,7 @@ class MainWindow(QMainWindow):
             self.source_path,
             self.icon_path,
             self.developer_path,
+            self.source_attribution_path,
             output,
             str(serial),
         )
@@ -2128,9 +2190,12 @@ class MainWindow(QMainWindow):
         self.source_path = ""
         self.icon_path = ""
         self.developer_path = ""
+        self.source_attribution_path = ""
         self.source_card.clear_path()
         self.icon_card.clear_path()
         self.developer_card.clear_path()
+        self.source_attribution_card.clear_path()
+        self._release_imported_inputs()
         self.capture_button.setText("✓ 本次取证边界已记录")
         self.capture_button.setEnabled(False)
         if screenshot_count and recording_count:
@@ -2402,27 +2467,64 @@ class MainWindow(QMainWindow):
         return [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
 
     def _set_drop_highlights(self, paths: list[Path]) -> bool:
+        container_ready = any(is_input_container(path) for path in paths)
         source_ready = any(
             path.is_file() and path.suffix.lower() in SUPPORTED_SOURCES for path in paths
-        )
+        ) or container_ready
         icon_ready = any(
             path.is_file() and path.suffix.lower() in SUPPORTED_IMAGES for path in paths
-        )
+        ) or container_ready
         developer_ready = any(
-            path.is_file() and path.suffix.lower() in SUPPORTED_DEVELOPER_FILES
+            path.is_file() and path.name.lower() in DEVELOPER_FILE_NAMES
             for path in paths
-        )
+        ) or container_ready
+        source_attribution_ready = any(
+            path.is_file() and path.name.lower() in SOURCE_INFO_FILE_NAMES
+            for path in paths
+        ) or container_ready
         self.source_card._set_visual_state("dragActive", source_ready)
         self.icon_card._set_visual_state("dragActive", icon_ready)
         self.developer_card._set_visual_state("dragActive", developer_ready)
-        return source_ready or icon_ready or developer_ready
+        self.source_attribution_card._set_visual_state(
+            "dragActive", source_attribution_ready
+        )
+        return (
+            source_ready
+            or icon_ready
+            or developer_ready
+            or source_attribution_ready
+        )
 
     def _clear_drop_highlights(self) -> None:
         self.source_card._set_visual_state("dragActive", False)
         self.icon_card._set_visual_state("dragActive", False)
         self.developer_card._set_visual_state("dragActive", False)
+        self.source_attribution_card._set_visual_state("dragActive", False)
 
     def _route_dropped_paths(self, paths: list[Path]) -> bool:
+        containers = [path for path in paths if is_input_container(path)]
+        if containers:
+            if len(containers) != 1:
+                QMessageBox.warning(
+                    self,
+                    "无法自动导入",
+                    "请一次只拖入一个 ZIP 或文件夹。",
+                )
+                return True
+            try:
+                imported = import_input_container(containers[0])
+            except Exception as error:
+                QMessageBox.warning(self, "无法自动导入", str(error))
+                return True
+            self._imported_inputs.append(imported)
+            self.source_card.set_path(str(imported.source))
+            self.icon_card.set_path(str(imported.icon))
+            if imported.developer:
+                self.developer_card.set_path(str(imported.developer))
+            if imported.source_info:
+                self.source_attribution_card.set_path(str(imported.source_info))
+            return True
+
         source = next(
             (path for path in paths if path.is_file() and path.suffix.lower() in SUPPORTED_SOURCES),
             None,
@@ -2435,7 +2537,15 @@ class MainWindow(QMainWindow):
             (
                 path
                 for path in paths
-                if path.is_file() and path.suffix.lower() in SUPPORTED_DEVELOPER_FILES
+                if path.is_file() and path.name.lower() in DEVELOPER_FILE_NAMES
+            ),
+            None,
+        )
+        source_attribution = next(
+            (
+                path
+                for path in paths
+                if path.is_file() and path.name.lower() in SOURCE_INFO_FILE_NAMES
             ),
             None,
         )
@@ -2445,7 +2555,14 @@ class MainWindow(QMainWindow):
             self.icon_card.set_path(str(icon))
         if developer:
             self.developer_card.set_path(str(developer))
-        return source is not None or icon is not None or developer is not None
+        if source_attribution:
+            self.source_attribution_card.set_path(str(source_attribution))
+        return (
+            source is not None
+            or icon is not None
+            or developer is not None
+            or source_attribution is not None
+        )
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if event.type() in {QEvent.Type.DragEnter, QEvent.Type.DragMove}:
@@ -2488,6 +2605,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "扫描仍在进行", "请等待当前扫描完成后再关闭工具。")
             event.ignore()
             return
+        self._release_imported_inputs()
         event.accept()
 
 

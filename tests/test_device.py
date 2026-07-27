@@ -455,6 +455,34 @@ def test_prepare_carries_optional_developer_into_pending_session(
     assert pending["app"]["developer_source"] == "operator_provided_text_file"
 
 
+def test_prepare_carries_optional_source_attribution_into_pending_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    source_info = bundle / "source.txt"
+    source_info.write_text("https://example.test/app\n", encoding="utf-8")
+    handoff_path = bundle / "agent1_handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff["sourceAttribution"] = {
+        "value": "https://example.test/app",
+        "source": "operator_provided_text_file",
+        "path": source_info.name,
+        "sha256": _hash_file(source_info),
+    }
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    prepare_bundle(report, bundle, "PHONE-SOURCE", adb=FakePrepareAdb())
+
+    pending = json.loads(
+        (bundle / ".apkba-pending-session.json").read_text(encoding="utf-8")
+    )
+    assert pending["source_note"] == "https://example.test/app"
+    assert pending["source_attribution"]["value"] == "https://example.test/app"
+    assert pending["source_attribution"]["file_name"] == "source.txt"
+
+
 def test_abandon_capture_marks_session_without_deleting_bundle(tmp_path: Path) -> None:
     bundle = tmp_path / "Intake"
     bundle.mkdir()

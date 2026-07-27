@@ -21,6 +21,7 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--source", required=True, type=Path)
     scan.add_argument("--icon", required=True, type=Path)
     scan.add_argument("--developer", type=Path)
+    scan.add_argument("--source-info", type=Path)
     scan.add_argument("--output", required=True, type=Path)
     scan.add_argument("--profile", choices=("standard", "quick"), default="standard")
     scan.add_argument("--report-only", action="store_true")
@@ -30,6 +31,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--source", required=True, type=Path)
     prepare.add_argument("--icon", required=True, type=Path)
     prepare.add_argument("--developer", type=Path)
+    prepare.add_argument("--source-info", type=Path)
     prepare.add_argument("--output", required=True, type=Path)
     prepare.add_argument("--serial", required=True)
     prepare.add_argument(
@@ -106,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 args.serial,
                 developer_path=args.developer,
+                source_attribution_path=args.source_info,
                 confirm_low_target_sdk=(
                     (lambda _details: True) if args.allow_low_target_sdk_bypass else None
                 ),
@@ -159,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.icon,
                     args.output,
                     developer_path=args.developer,
+                    source_attribution_path=args.source_info,
                 )
             )
         print(json.dumps(payload, ensure_ascii=False, indent=2))

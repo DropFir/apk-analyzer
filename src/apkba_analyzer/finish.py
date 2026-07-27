@@ -513,6 +513,18 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
             or _hash_file(developer_path).upper() != expected_developer_hash.upper()
         ):
             raise ScanFailure("证据包内开发者信息文件缺失或 SHA-256 不匹配。")
+    source_attribution = (observations.get("source") or {}).get("attribution")
+    if isinstance(source_attribution, dict) and source_attribution.get("value"):
+        attribution_path = package / str(source_attribution.get("package_path") or "")
+        expected_attribution_hash = str(source_attribution.get("sha256") or "")
+        if (
+            not attribution_path.is_file()
+            or not _is_direct_child(attribution_path, package)
+            or not expected_attribution_hash
+            or _hash_file(attribution_path).upper()
+            != expected_attribution_hash.upper()
+        ):
+            raise ScanFailure("证据包内来源信息文件缺失或 SHA-256 不匹配。")
     media = observations.get("media") or {}
     if int(media.get("screenshot_count") or 0) != len(screenshots):
         raise ScanFailure("截图记录数量与实际文件不一致。")
@@ -627,6 +639,28 @@ def finalize_evidence(
             or _hash_file(developer_file).upper() != expected_developer_hash.upper()
         ):
             raise ScanFailure("交接包中的开发者信息文件缺失或 SHA-256 校验失败。")
+    source_attribution_session = session.get("source_attribution")
+    source_attribution_file = None
+    if (
+        isinstance(source_attribution_session, dict)
+        and source_attribution_session.get("value")
+    ):
+        source_attribution_file = _session_path(
+            bundle_path,
+            source_attribution_session.get("path"),
+            str(source_attribution_session.get("file_name") or ""),
+        )
+        expected_source_attribution_hash = str(
+            source_attribution_session.get("sha256") or ""
+        )
+        if (
+            not source_attribution_file.is_file()
+            or not _is_direct_child(source_attribution_file, bundle_path)
+            or not expected_source_attribution_hash
+            or _hash_file(source_attribution_file).upper()
+            != expected_source_attribution_hash.upper()
+        ):
+            raise ScanFailure("交接包中的来源信息文件缺失或 SHA-256 校验失败。")
     if not source.is_file() or not icon.is_file():
         raise ScanFailure("交接包中的源安装包或图标已丢失。")
     expected_hash = str((session.get("source") or {}).get("sha256") or "")
@@ -738,6 +772,10 @@ def finalize_evidence(
         if developer_file:
             copied_developer = staging / "developer.txt"
             shutil.copy2(developer_file, copied_developer)
+        copied_source_attribution = None
+        if source_attribution_file:
+            copied_source_attribution = staging / "source.txt"
+            shutil.copy2(source_attribution_file, copied_source_attribution)
         media_elapsed = round((time.monotonic() - media_started) * 1000)
 
         record_started = time.monotonic()
@@ -790,6 +828,17 @@ def finalize_evidence(
                 "sha256": expected_hash.upper(),
                 "copied_source_sha256": source_hash,
                 "source_note": session.get("source_note"),
+                "attribution": (
+                    {
+                        "value": source_attribution_session.get("value"),
+                        "source": source_attribution_session.get("source"),
+                        "sha256": _hash_file(copied_source_attribution).upper(),
+                        "package_path": copied_source_attribution.name,
+                    }
+                    if copied_source_attribution
+                    and isinstance(source_attribution_session, dict)
+                    else None
+                ),
                 "selected_splits": list(
                     (session.get("source") or {}).get("selected_splits") or []
                 ),

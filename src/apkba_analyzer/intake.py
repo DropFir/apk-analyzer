@@ -16,8 +16,11 @@ from apkba_analyzer.models import ScanFailure
 from apkba_analyzer.scanner import _hash_file
 
 SUPPORTED_DEVELOPER_FILES = {".txt"}
+SUPPORTED_SOURCE_INFO_FILES = {".txt"}
 MAX_DEVELOPER_FILE_BYTES = 16 * 1024
 MAX_DEVELOPER_NAME_LENGTH = 200
+MAX_SOURCE_INFO_FILE_BYTES = 64 * 1024
+MAX_SOURCE_INFO_LENGTH = 4_000
 
 
 def _portable_name(value: str, fallback: str) -> str:
@@ -56,13 +59,32 @@ def _read_developer_name(path: Path) -> str:
     return value
 
 
+def _read_source_attribution(path: Path) -> str:
+    if path.suffix.lower() not in SUPPORTED_SOURCE_INFO_FILES:
+        raise ScanFailure("来源信息必须是 .txt 文件。")
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_SOURCE_INFO_FILE_BYTES:
+        raise ScanFailure("来源信息文件必须为非空且不超过 64 KB。")
+    try:
+        value = " ".join(path.read_text(encoding="utf-8-sig").split())
+    except UnicodeDecodeError as error:
+        raise ScanFailure("来源信息文件必须使用 UTF-8 编码。") from error
+    if not value:
+        raise ScanFailure("来源信息文件没有可用内容。")
+    if len(value) > MAX_SOURCE_INFO_LENGTH:
+        raise ScanFailure("来源信息不能超过 4000 个字符。")
+    return value
+
+
 def _summary_html(report: dict[str, Any]) -> str:
     app = report.get("app") or {}
     developer = report.get("developer") or {}
+    source_attribution = report.get("sourceAttribution") or {}
     rows = [
         ("状态", report.get("status")),
         ("应用", app.get("applicationLabel")),
         ("开发者（编辑提供）", developer.get("name")),
+        ("安装包来源（编辑提供）", source_attribution.get("value")),
         ("包名", app.get("packageName")),
         ("版本", app.get("versionName")),
         ("Version code", app.get("versionCode")),
@@ -111,6 +133,7 @@ def create_intake_bundle(
     output_root: str | os.PathLike[str],
     *,
     developer_path: str | os.PathLike[str] | None = None,
+    source_attribution_path: str | os.PathLike[str] | None = None,
 ) -> Path:
     """Copy verified inputs and reports into an atomic, portable intake folder."""
 
@@ -120,6 +143,14 @@ def create_intake_bundle(
     icon = Path(icon_path).resolve()
     developer_file = Path(developer_path).resolve() if developer_path else None
     developer_name = _read_developer_name(developer_file) if developer_file else None
+    source_attribution_file = (
+        Path(source_attribution_path).resolve() if source_attribution_path else None
+    )
+    source_attribution_value = (
+        _read_source_attribution(source_attribution_file)
+        if source_attribution_file
+        else None
+    )
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     app = report.get("app") or {}
@@ -140,10 +171,15 @@ def create_intake_bundle(
         source_destination = staging / portable_source_name
         icon_destination = staging / f"icon{icon.suffix.lower()}"
         developer_destination = staging / "developer.txt" if developer_file else None
+        source_attribution_destination = (
+            staging / "source.txt" if source_attribution_file else None
+        )
         shutil.copy2(source, source_destination)
         shutil.copy2(icon, icon_destination)
         if developer_file and developer_destination:
             shutil.copy2(developer_file, developer_destination)
+        if source_attribution_file and source_attribution_destination:
+            shutil.copy2(source_attribution_file, source_attribution_destination)
         expected_source = (report.get("source") or {}).get("sha256")
         expected_icon = (report.get("icon") or {}).get("sha256")
         if _hash_file(source_destination) != expected_source:
@@ -158,13 +194,27 @@ def create_intake_bundle(
                 "path": developer_destination.name,
                 "sha256": _hash_file(developer_destination),
             }
+        source_attribution_record = None
+        if source_attribution_destination and source_attribution_value:
+            source_attribution_record = {
+                "value": source_attribution_value,
+                "source": "operator_provided_text_file",
+                "path": source_attribution_destination.name,
+                "sha256": _hash_file(source_attribution_destination),
+            }
 
         portable_report = json.loads(json.dumps(report))
         portable_report["developer"] = developer_record
+        portable_report["sourceAttribution"] = source_attribution_record
         portable_report["bundle"] = {
             "sourcePath": source_destination.name,
             "iconPath": icon_destination.name,
             "developerPath": developer_destination.name if developer_destination else None,
+            "sourceAttributionPath": (
+                source_attribution_destination.name
+                if source_attribution_destination
+                else None
+            ),
             "reportPath": "scan_report.json",
             "handoffPath": "agent1_handoff.json",
         }
@@ -179,6 +229,7 @@ def create_intake_bundle(
             },
             "icon": {"path": icon_destination.name, "sha256": expected_icon},
             "developer": developer_record,
+            "sourceAttribution": source_attribution_record,
             "verifiedFacts": {
                 "app": report.get("app"),
                 "signature": report.get("signature"),
@@ -201,7 +252,8 @@ def create_intake_bundle(
         (staging / "README.txt").write_text(
             "APKBA Agent1 intake bundle\n\n"
             "This folder contains one original APK/XAPK, one validated icon, "
-            "optional editor-provided developer information, and the offline scan records.\n"
+            "optional editor-provided developer and source information, "
+            "and the offline scan records.\n"
             "Point Agent1 at this folder. Agent1 still performs installation, launch, "
             "manual media collection, and final evidence validation.\n",
             encoding="utf-8",

@@ -755,6 +755,39 @@ def prepare_bundle(
             "file_name": developer_path.name,
             "sha256": expected_developer_hash.upper(),
         }
+    handoff_source_attribution = handoff.get("sourceAttribution")
+    source_attribution = None
+    if (
+        isinstance(handoff_source_attribution, dict)
+        and handoff_source_attribution.get("value")
+    ):
+        source_attribution_path = (
+            bundle / str(handoff_source_attribution.get("path") or "")
+        ).resolve()
+        if (
+            not source_attribution_path.is_file()
+            or source_attribution_path.parent != bundle.resolve()
+        ):
+            raise ScanFailure("交接包中的可选来源信息文件已丢失或路径无效。")
+        expected_source_attribution_hash = str(
+            handoff_source_attribution.get("sha256") or ""
+        )
+        if (
+            not expected_source_attribution_hash
+            or _hash_file(source_attribution_path).upper()
+            != expected_source_attribution_hash.upper()
+        ):
+            raise ScanFailure("交接包中的可选来源信息文件 SHA-256 校验失败。")
+        source_attribution = {
+            "value": str(handoff_source_attribution["value"]),
+            "source": str(
+                handoff_source_attribution.get("source")
+                or "operator_provided_text_file"
+            ),
+            "path": str(source_attribution_path),
+            "file_name": source_attribution_path.name,
+            "sha256": expected_source_attribution_hash.upper(),
+        }
     pending_path = bundle / PENDING_FILE_NAME
     if pending_path.exists():
         raise ScanFailure(f"该交接包已有未完成取证：{pending_path}")
@@ -951,7 +984,12 @@ def prepare_bundle(
         "status": "awaiting_manual_capture",
         "capture_mode": "manual",
         "evidence_root": str(bundle.resolve()),
-        "source_note": "User-provided package; source attribution was not independently verified.",
+        "source_note": (
+            str(source_attribution["value"])
+            if source_attribution
+            else "User-provided package; source attribution was not independently verified."
+        ),
+        "source_attribution": source_attribution,
         "developer": developer,
         "source": {
             "path": str(source),
@@ -1058,6 +1096,7 @@ def scan_create_and_prepare(
     serial: str,
     *,
     developer_path: str | os.PathLike[str] | None = None,
+    source_attribution_path: str | os.PathLike[str] | None = None,
     adb: AdbClient | None = None,
     progress: Progress | None = None,
     confirm_low_target_sdk: LowTargetSdkConfirmation | None = None,
@@ -1103,6 +1142,7 @@ def scan_create_and_prepare(
             icon_path,
             output_root,
             developer_path=developer_path,
+            source_attribution_path=source_attribution_path,
         )
         result = prepare_bundle(
             report,

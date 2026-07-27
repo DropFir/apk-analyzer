@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -302,6 +303,49 @@ def test_full_window_drop_routes_apkm_and_image_together(
     window.close()
 
 
+def test_full_window_drop_imports_wrapper_zip_and_optional_texts(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_refresh_devices", lambda _self: None)
+    wrapper = tmp_path / "Dexcom Clarity.zip"
+    with zipfile.ZipFile(wrapper, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("dexcom-clarity.xapk", b"xapk fixture")
+        archive.writestr("icon.webp", b"webp fixture")
+        archive.writestr("developer.txt", "Dexcom\n")
+        archive.writestr("source.txt", "https://example.test/dexcom\n")
+    window = MainWindow()
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(wrapper))])
+    enter_event = QDragEnterEvent(
+        QPoint(10, 10),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    QApplication.sendEvent(window.output_edit, enter_event)
+    QApplication.sendEvent(window.output_edit, event)
+
+    assert enter_event.isAccepted() is True
+    assert event.isAccepted() is True
+    assert Path(window.source_path).name == "dexcom-clarity.xapk"
+    assert Path(window.icon_path).name == "icon.webp"
+    assert Path(window.developer_path).read_text(encoding="utf-8").strip() == "Dexcom"
+    assert (
+        Path(window.source_attribution_path).read_text(encoding="utf-8").strip()
+        == "https://example.test/dexcom"
+    )
+    window.close()
+
+
 def test_clear_button_resets_optional_and_required_inputs(
     qt_app: QApplication,
     monkeypatch: pytest.MonkeyPatch,
@@ -325,6 +369,7 @@ def test_clear_button_resets_optional_and_required_inputs(
     assert window.source_path == ""
     assert window.icon_path == ""
     assert window.developer_path == ""
+    assert window.source_attribution_path == ""
     assert window.detail_label.text() == ""
     assert window.progress.value() == 0
     assert window.open_button.isHidden() is True

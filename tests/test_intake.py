@@ -84,3 +84,33 @@ def test_optional_developer_text_is_copied_and_recorded(tmp_path: Path) -> None:
     assert handoff["developer"]["path"] == "developer.txt"
     assert handoff["developer"]["sha256"]
     assert scan_report["developer"]["name"] == "SEGA"
+
+
+def test_optional_source_attribution_is_copied_and_recorded(tmp_path: Path) -> None:
+    source = tmp_path / "bundle.apk"
+    icon = tmp_path / "art.png"
+    source_info = tmp_path / "source.txt"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", MANIFEST)
+    Image.new("RGB", (512, 512), "#087763").save(icon)
+    source_info.write_text("https://example.test/app\n", encoding="utf-8")
+    report = scan_package(source, icon, profile="quick")
+
+    bundle = create_intake_bundle(
+        report,
+        source,
+        icon,
+        output,
+        source_attribution_path=source_info,
+    )
+
+    copied = bundle / "source.txt"
+    handoff = json.loads((bundle / "agent1_handoff.json").read_text(encoding="utf-8"))
+    scan_report = json.loads((bundle / "scan_report.json").read_text(encoding="utf-8"))
+    assert copied.read_text(encoding="utf-8").strip() == "https://example.test/app"
+    assert handoff["sourceAttribution"]["value"] == "https://example.test/app"
+    assert handoff["sourceAttribution"]["source"] == "operator_provided_text_file"
+    assert handoff["sourceAttribution"]["path"] == "source.txt"
+    assert handoff["sourceAttribution"]["sha256"]
+    assert scan_report["sourceAttribution"]["value"] == "https://example.test/app"

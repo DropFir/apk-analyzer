@@ -30,7 +30,8 @@ SUPPORTED_SOURCES = {".apk", ".xapk", ".apkm", ".apks"}
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_XAPK_MANIFEST_BYTES = 2 * 1024 * 1024
-MAX_ARCHIVE_ENTRIES = 20_000
+MAX_ARCHIVE_ENTRIES_WARNING = 20_000
+MAX_ARCHIVE_ENTRIES_HARD = 250_000
 MAX_UNCOMPRESSED_BYTES = 12 * 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 1_000
 KNOWN_ANDROID_ABIS = {
@@ -98,12 +99,26 @@ def _archive_audit(path: Path, deep: bool, findings: list[Finding]) -> dict[str,
                 and item.file_size / max(item.compress_size, 1) > MAX_COMPRESSION_RATIO
             )
 
-            if len(infos) > MAX_ARCHIVE_ENTRIES:
+            if len(infos) > MAX_ARCHIVE_ENTRIES_HARD:
                 findings.append(
                     Finding(
                         "error",
                         "archive.too_many_entries",
-                        f"压缩包条目过多：{len(infos):,}。",
+                        (
+                            f"压缩包条目数量异常：{len(infos):,}；"
+                            f"超过安全处理上限 {MAX_ARCHIVE_ENTRIES_HARD:,}。"
+                        ),
+                    )
+                )
+            elif len(infos) > MAX_ARCHIVE_ENTRIES_WARNING:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "archive.many_entries",
+                        (
+                            f"压缩包条目较多：{len(infos):,}；已继续检查总展开体积、"
+                            "压缩比、路径和条目安全性。"
+                        ),
                     )
                 )
             if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
@@ -1360,8 +1375,14 @@ def scan_package(
         "certificateSha256": [],
         "tool": "none",
     }
+    package_inspection_attempted = False
+    archive_blocked = any(
+        item.severity == "error" and item.code.startswith("archive.")
+        for item in findings
+    )
 
-    if not any(item.severity == "error" for item in findings):
+    if not archive_blocked:
+        package_inspection_attempted = True
         try:
             if source_format == "apk":
                 _progress(progress, 50, "解析 APK manifest…")
@@ -1442,25 +1463,30 @@ def scan_package(
         except (ScanFailure, OSError, zipfile.BadZipFile) as error:
             findings.append(Finding("error", "package.parse_failed", str(error)))
 
-    if not app.get("packageName"):
-        findings.append(Finding("error", "manifest.package_missing", "未能确认应用包名。"))
-    if not app.get("versionCode"):
-        findings.append(
-            Finding("warning", "manifest.version_code_missing", "未能读取 versionCode。")
-        )
-    if app.get("launcherCategory") == LEANBACK_LAUNCHER_CATEGORY:
-        findings.append(
-            Finding(
-                "warning",
-                "manifest.leanback_launcher_only",
-                "该应用仅声明 Android TV（Leanback）启动入口；普通手机不兼容。",
-                f"launcherActivity={app.get('launcherActivity')}",
+    if package_inspection_attempted:
+        if not app.get("packageName"):
+            findings.append(Finding("error", "manifest.package_missing", "未能确认应用包名。"))
+        if not app.get("versionCode"):
+            findings.append(
+                Finding("warning", "manifest.version_code_missing", "未能读取 versionCode。")
             )
-        )
-    elif not app.get("launcherActivity"):
-        findings.append(
-            Finding("warning", "manifest.launcher_missing", "未找到可确认的 LAUNCHER activity。")
-        )
+        if app.get("launcherCategory") == LEANBACK_LAUNCHER_CATEGORY:
+            findings.append(
+                Finding(
+                    "warning",
+                    "manifest.leanback_launcher_only",
+                    "该应用仅声明 Android TV（Leanback）启动入口；普通手机不兼容。",
+                    f"launcherActivity={app.get('launcherActivity')}",
+                )
+            )
+        elif not app.get("launcherActivity"):
+            findings.append(
+                Finding(
+                    "warning",
+                    "manifest.launcher_missing",
+                    "未找到可确认的 LAUNCHER activity。",
+                )
+            )
 
     errors = [item.message for item in findings if item.severity == "error"]
     warnings = [item.message for item in findings if item.severity == "warning"]

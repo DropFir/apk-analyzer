@@ -512,3 +512,53 @@ def test_archive_traversal_is_blocked(tmp_path: Path) -> None:
 
     assert report["status"] == "blocked"
     assert any(item["code"] == "archive.unsafe_paths" for item in report["findings"])
+    assert not any(
+        item["code"] == "manifest.package_missing" for item in report["findings"]
+    )
+
+
+def test_large_resource_archive_warns_but_still_parses_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "large-resource-game.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source)
+    with zipfile.ZipFile(source, "a", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("assets/game/imported/resource.stex", b"fixture")
+    make_icon(icon)
+    monkeypatch.setattr("apkba_analyzer.scanner.MAX_ARCHIVE_ENTRIES_WARNING", 2)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "warning"
+    assert report["app"]["packageName"] == "com.example.fixture"
+    assert any(item["code"] == "archive.many_entries" for item in report["findings"])
+    assert not any(
+        item["code"] == "archive.too_many_entries" for item in report["findings"]
+    )
+    assert not any(
+        item["code"] == "manifest.package_missing" for item in report["findings"]
+    )
+
+
+def test_extreme_entry_count_remains_blocked_without_secondary_manifest_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "entry-flood.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source)
+    with zipfile.ZipFile(source, "a", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("assets/one", b"fixture")
+    make_icon(icon)
+    monkeypatch.setattr("apkba_analyzer.scanner.MAX_ARCHIVE_ENTRIES_WARNING", 1)
+    monkeypatch.setattr("apkba_analyzer.scanner.MAX_ARCHIVE_ENTRIES_HARD", 2)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "blocked"
+    assert any(
+        item["code"] == "archive.too_many_entries" for item in report["findings"]
+    )
+    assert not any(
+        item["code"] == "manifest.package_missing" for item in report["findings"]
+    )

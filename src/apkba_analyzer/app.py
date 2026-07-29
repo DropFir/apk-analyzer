@@ -2093,9 +2093,12 @@ class MainWindow(QMainWindow):
         bypass = prepare_result.get("lowTargetSdkBypass") or {}
         bypass_text = ""
         if prepare_result.get("lowTargetSdkBypassUsed"):
+            target_sdk_text = str(bypass.get("target_sdk"))
+            if not bypass.get("target_sdk_declared", True):
+                target_sdk_text = "未声明，系统安装判定为 0"
             bypass_text = (
                 "\n低目标 SDK 兼容安装：已人工确认"
-                f"（target {bypass.get('target_sdk')}，"
+                f"（target {target_sdk_text}，"
                 f"手机要求至少 {bypass.get('device_minimum_target_sdk')}）"
             )
         self.detail_label.setText(
@@ -2131,8 +2134,15 @@ class MainWindow(QMainWindow):
         message_box = QMessageBox(self)
         message_box.setIcon(QMessageBox.Icon.Warning)
         message_box.setWindowTitle("低目标 SDK 应用")
+        if requirement.get("target_sdk_declared", True):
+            target_sdk_text = f"该 APK 的 targetSdk 是 {requirement.get('target_sdk')}"
+        else:
+            target_sdk_text = (
+                "该 APK 的 Manifest 未声明 targetSdkVersion，"
+                "系统安装时将其判定为 0"
+            )
         message_box.setText(
-            f"该 APK 的 targetSdk 是 {requirement.get('target_sdk')}，"
+            f"{target_sdk_text}，"
             f"手机系统要求至少 {requirement.get('device_minimum_target_sdk')}。"
         )
         message_box.setInformativeText(

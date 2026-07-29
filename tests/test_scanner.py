@@ -55,6 +55,19 @@ TV_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
   </application>
 </manifest>"""
 
+MISSING_TARGET_SDK_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.ancient" android:versionName="1.0" android:versionCode="1">
+  <application android:label="Ancient Fixture">
+    <activity android:name=".MainActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>"""
+
 
 def make_apk(path: Path, manifest: str = MANIFEST) -> None:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -135,6 +148,23 @@ def test_apk_scan_records_no_native_abi_for_managed_only_package(tmp_path: Path)
 
     assert report["app"]["nativeCode"]["libraryCount"] == 0
     assert report["app"]["nativeCode"]["abis"] == []
+
+
+def test_apk_scan_warns_when_manifest_does_not_declare_target_sdk(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "ancient.apk"
+    icon = tmp_path / "icon.png"
+    make_apk(source, MISSING_TARGET_SDK_MANIFEST)
+    make_icon(icon)
+
+    report = scan_package(source, icon, profile="quick")
+
+    assert report["status"] == "warning"
+    assert report["app"]["targetSdk"] is None
+    assert any(
+        item["code"] == "manifest.target_sdk_missing" for item in report["findings"]
+    )
 
 
 def test_non_square_icon_blocks_bundle(tmp_path: Path) -> None:

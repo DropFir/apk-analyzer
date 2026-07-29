@@ -519,6 +519,9 @@ def test_low_target_sdk_requirement_matches_android_15_install_policy() -> None:
     assert requirement == {
         "package_name": "com.example.legacy",
         "target_sdk": 22,
+        "manifest_target_sdk": 22,
+        "target_sdk_declared": True,
+        "target_sdk_resolution": "manifest_declared",
         "device_sdk": 35,
         "device_minimum_target_sdk": 24,
         "reason": "android_low_target_sdk_install_block",
@@ -530,6 +533,36 @@ def test_low_target_sdk_requirement_matches_android_15_install_policy() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("manifest_target_sdk", "resolution"),
+    [
+        (None, "manifest_missing_treated_as_zero"),
+        ("", "manifest_missing_treated_as_zero"),
+        (0, "manifest_non_positive_treated_as_zero"),
+        ("invalid", "manifest_unreadable_treated_as_zero"),
+    ],
+)
+def test_low_target_sdk_requirement_handles_missing_or_invalid_manifest_value(
+    manifest_target_sdk: object,
+    resolution: str,
+) -> None:
+    requirement = low_target_sdk_install_requirement(
+        {
+            "app": {
+                "packageName": "com.example.ancient",
+                "targetSdk": manifest_target_sdk,
+            }
+        },
+        {"sdk": "35"},
+    )
+
+    assert requirement is not None
+    assert requirement["target_sdk"] == 0
+    assert requirement["manifest_target_sdk"] == manifest_target_sdk
+    assert requirement["target_sdk_declared"] is (manifest_target_sdk not in {None, ""})
+    assert requirement["target_sdk_resolution"] == resolution
 
 
 def test_prepare_requires_explicit_low_target_sdk_confirmation_before_creating_bundle(
@@ -615,6 +648,45 @@ def test_prepare_workflow_continues_after_explicit_low_target_sdk_confirmation(
     assert confirmations[0]["target_sdk"] == 22
     assert install[:3] == ["install", "--bypass-low-target-sdk-block", "-r"]
     assert result["lowTargetSdkBypassUsed"] is True
+
+
+def test_prepare_workflow_uses_explicit_bypass_when_target_sdk_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["status"] = "warning"
+    report["app"]["targetSdk"] = None
+    adb = FakePrepareAdb()
+    confirmations: list[dict] = []
+    monkeypatch.setattr("apkba_analyzer.device.scan_package", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(
+        "apkba_analyzer.device.create_intake_bundle",
+        lambda *_args, **_kwargs: bundle,
+    )
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    _report, _prepared_bundle, result = scan_create_and_prepare(
+        tmp_path / "ancient.apk",
+        tmp_path / "ancient.webp",
+        tmp_path,
+        "PHONE-LEGACY",
+        adb=adb,
+        confirm_low_target_sdk=lambda details: confirmations.append(details) or True,
+    )
+
+    install = next(arguments for _serial, arguments in adb.calls if arguments[0] == "install")
+    pending = json.loads((bundle / ".apkba-pending-session.json").read_text(encoding="utf-8"))
+    assert len(confirmations) == 1
+    assert confirmations[0]["target_sdk"] == 0
+    assert confirmations[0]["manifest_target_sdk"] is None
+    assert confirmations[0]["target_sdk_declared"] is False
+    assert install[:3] == ["install", "--bypass-low-target-sdk-block", "-r"]
+    assert result["lowTargetSdkBypassUsed"] is True
+    assert pending["app"]["target_sdk"] is None
+    assert pending["install"]["low_target_sdk_bypass"] == {
+        **confirmations[0],
+        "authorization": "explicit_operator_confirmation",
+    }
 
 
 def test_record_media_capture_end_adds_a_bounded_snapshot_without_closing_session(

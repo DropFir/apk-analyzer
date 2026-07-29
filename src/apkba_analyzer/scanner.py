@@ -1470,6 +1470,17 @@ def scan_package(
             findings.append(
                 Finding("warning", "manifest.version_code_missing", "未能读取 versionCode。")
             )
+        if app.get("targetSdk") in {None, ""}:
+            findings.append(
+                Finding(
+                    "warning",
+                    "manifest.target_sdk_missing",
+                    (
+                        "Manifest 未声明 targetSdkVersion；新 Android 系统可能按 0 "
+                        "执行低目标 SDK 安装限制。"
+                    ),
+                )
+            )
         if app.get("launcherCategory") == LEANBACK_LAUNCHER_CATEGORY:
             findings.append(
                 Finding(

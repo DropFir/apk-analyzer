@@ -584,10 +584,25 @@ def low_target_sdk_install_requirement(
 
     app = report.get("app") or {}
     try:
-        target_sdk = int(app["targetSdk"])
         device_sdk = int(device["sdk"])
     except (KeyError, TypeError, ValueError):
         return None
+    manifest_target_sdk = app.get("targetSdk")
+    target_sdk_declared = manifest_target_sdk not in {None, ""}
+    target_sdk_resolution = "manifest_declared"
+    try:
+        target_sdk = int(manifest_target_sdk)
+    except (TypeError, ValueError):
+        target_sdk = 0
+        target_sdk_resolution = (
+            "manifest_missing_treated_as_zero"
+            if not target_sdk_declared
+            else "manifest_unreadable_treated_as_zero"
+        )
+    if target_sdk < 1:
+        target_sdk = 0
+        if target_sdk_resolution == "manifest_declared":
+            target_sdk_resolution = "manifest_non_positive_treated_as_zero"
     if device_sdk >= 35:
         minimum_target_sdk = 24
     elif device_sdk == 34:
@@ -599,6 +614,9 @@ def low_target_sdk_install_requirement(
     return {
         "package_name": str(app.get("packageName") or ""),
         "target_sdk": target_sdk,
+        "manifest_target_sdk": manifest_target_sdk,
+        "target_sdk_declared": target_sdk_declared,
+        "target_sdk_resolution": target_sdk_resolution,
         "device_sdk": device_sdk,
         "device_minimum_target_sdk": minimum_target_sdk,
         "reason": "android_low_target_sdk_install_block",
@@ -1138,9 +1156,12 @@ def scan_create_and_prepare(
             if confirm_low_target_sdk is None or not confirm_low_target_sdk(
                 low_target_requirement
             ):
+                target_sdk_text = str(low_target_requirement["target_sdk"])
+                if not low_target_requirement["target_sdk_declared"]:
+                    target_sdk_text = "未声明（系统安装判定为 0）"
                 raise ScanFailure(
                     "已取消低目标 SDK 兼容安装；安装包未安装到手机。"
-                    f" APK targetSdk={low_target_requirement['target_sdk']}，"
+                    f" APK targetSdk={target_sdk_text}，"
                     f"手机要求至少 {low_target_requirement['device_minimum_target_sdk']}。"
                 )
             low_target_sdk_bypass = {

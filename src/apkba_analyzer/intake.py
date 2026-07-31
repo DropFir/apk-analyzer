@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ MAX_DEVELOPER_FILE_BYTES = 16 * 1024
 MAX_DEVELOPER_NAME_LENGTH = 200
 MAX_SOURCE_INFO_FILE_BYTES = 64 * 1024
 MAX_SOURCE_INFO_LENGTH = 4_000
+PUBLISH_RETRY_DELAYS = (0.05, 0.10, 0.25, 0.50, 1.00, 2.00)
+TRANSIENT_PUBLISH_WINERRORS = {5, 32, 33}
 
 
 def _portable_name(value: str, fallback: str) -> str:
@@ -40,6 +43,37 @@ def _unique_destination(root: Path, base_name: str) -> Path:
         if not candidate.exists():
             return candidate
     raise ScanFailure("无法为交接包分配唯一目录名。")
+
+
+def _publish_staging_directory(
+    staging: Path,
+    root: Path,
+    base_name: str,
+    destination: Path,
+) -> Path:
+    """Publish a completed staging folder despite brief Windows directory locks."""
+
+    for attempt in range(len(PUBLISH_RETRY_DELAYS) + 1):
+        try:
+            staging.replace(destination)
+            return destination
+        except OSError as error:
+            if destination.exists():
+                destination = _unique_destination(root, base_name)
+                continue
+            transient = isinstance(error, PermissionError) or (
+                getattr(error, "winerror", None) in TRANSIENT_PUBLISH_WINERRORS
+            )
+            if not transient:
+                raise
+            if attempt == len(PUBLISH_RETRY_DELAYS):
+                raise ScanFailure(
+                    "系统暂时无法完成交接包目录创建；输出目录可能正被资源管理器、"
+                    "杀毒/同步工具或另一个程序占用。请稍后重试，或改用本地普通文件夹。"
+                ) from error
+            time.sleep(PUBLISH_RETRY_DELAYS[attempt])
+
+    raise AssertionError("unreachable")
 
 
 def _read_developer_name(path: Path) -> str:
@@ -156,7 +190,8 @@ def create_intake_bundle(
     app = report.get("app") or {}
     app_name = _portable_name(str(app.get("applicationLabel") or "Android_App"), "Android_App")
     package = _portable_name(str(app.get("packageName") or "unknown.package"), "unknown.package")
-    destination = _unique_destination(root, f"{app_name}_{package}_Agent1_Intake")
+    base_name = f"{app_name}_{package}_Agent1_Intake"
+    destination = _unique_destination(root, base_name)
     staging = root / f".apkba-intake-{uuid.uuid4().hex}"
 
     try:
@@ -258,7 +293,7 @@ def create_intake_bundle(
             "manual media collection, and final evidence validation.\n",
             encoding="utf-8",
         )
-        staging.replace(destination)
+        destination = _publish_staging_directory(staging, root, base_name, destination)
         return destination
     except Exception:
         if staging.exists():

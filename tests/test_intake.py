@@ -132,3 +132,64 @@ def test_optional_source_attribution_is_copied_and_recorded(tmp_path: Path) -> N
     assert handoff["sourceAttribution"]["path"] == "source.txt"
     assert handoff["sourceAttribution"]["sha256"]
     assert scan_report["sourceAttribution"]["value"] == "https://example.test/app"
+
+
+def test_bundle_publish_retries_after_transient_permission_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "bundle.apk"
+    icon = tmp_path / "art.png"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", MANIFEST)
+    Image.new("RGB", (512, 512), "#087763").save(icon)
+    report = scan_package(source, icon, profile="quick")
+    original_replace = Path.replace
+    attempts = 0
+
+    def flaky_replace(path: Path, target: Path) -> Path:
+        nonlocal attempts
+        if path.name.startswith(".apkba-intake-") and attempts == 0:
+            attempts += 1
+            raise PermissionError(13, "Access is denied", str(target))
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr("apkba_analyzer.intake.time.sleep", lambda _delay: None)
+
+    bundle = create_intake_bundle(report, source, icon, output)
+
+    assert attempts == 1
+    assert (bundle / "bundle.apk").is_file()
+
+
+def test_bundle_publish_chooses_new_name_after_destination_race(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "bundle.apk"
+    icon = tmp_path / "art.png"
+    output = tmp_path / "output"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml", MANIFEST)
+    Image.new("RGB", (512, 512), "#087763").save(icon)
+    report = scan_package(source, icon, profile="quick")
+    original_replace = Path.replace
+    raced_destination: Path | None = None
+
+    def racing_replace(path: Path, target: Path) -> Path:
+        nonlocal raced_destination
+        if path.name.startswith(".apkba-intake-") and raced_destination is None:
+            raced_destination = Path(target)
+            raced_destination.mkdir()
+            (raced_destination / "claimed.txt").write_text("other window", encoding="utf-8")
+            raise PermissionError(13, "Access is denied", str(target))
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", racing_replace)
+
+    bundle = create_intake_bundle(report, source, icon, output)
+
+    assert raced_destination is not None
+    assert bundle != raced_destination
+    assert (raced_destination / "claimed.txt").is_file()
+    assert (bundle / "bundle.apk").is_file()

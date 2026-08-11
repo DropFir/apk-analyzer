@@ -202,6 +202,31 @@ def test_finalize_builds_and_validates_schema3_package(tmp_path: Path) -> None:
     assert all(serial == "PHONE-FINISH" for serial, _arguments in adb.calls)
 
 
+def test_finalize_accepts_non_square_icon_and_records_dimensions(tmp_path: Path) -> None:
+    bundle, remote_files = make_finish_bundle(tmp_path)
+    Image.new("RGB", (512, 320), "#087763").save(bundle / "icon.png")
+    result = finalize_evidence(
+        bundle,
+        ["/sdcard/DCIM/Screenshots/Screenshot_Example.png"],
+        "/sdcard/DCIM/Screen recordings/Example.mp4",
+        content_visibility="visible",
+        review_method="operator_confirmed_playback",
+        output_root=tmp_path / "non-square-icon-output",
+        adb=FakeFinishAdb(remote_files),
+    )
+
+    package = Path(result["packagePath"])
+    observations = json.loads((package / "observations.json").read_text(encoding="utf-8"))
+    assert observations["icon"] == {
+        "file_name": "icon.png",
+        "size_bytes": (package / "icon.png").stat().st_size,
+        "width": 512,
+        "height": 320,
+        "square": False,
+    }
+    assert validate_evidence_package(package, result["sourceSha256"])["status"] == "pass"
+
+
 def test_finalize_carries_optional_developer_text_into_evidence(tmp_path: Path) -> None:
     bundle, remote_files = make_finish_bundle(tmp_path)
     developer = bundle / "developer.txt"

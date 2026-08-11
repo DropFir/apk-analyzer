@@ -495,10 +495,13 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
         raise ScanFailure("证据包缺少说明、唯一图标或唯一源安装包。")
     if not ready_marker.is_file() or ready_marker.stat().st_size != 0:
         raise ScanFailure("证据包缺少 0 字节的 _READY 完成标记。")
-    with Image.open(icons[0]) as icon:
-        width, height = icon.size
-    if icons[0].stat().st_size <= 0 or width != height:
-        raise ScanFailure("证据包图标不是有效正方形图片。")
+    if icons[0].stat().st_size <= 0:
+        raise ScanFailure("证据包图标为空文件。")
+    try:
+        with Image.open(icons[0]) as icon:
+            icon.verify()
+    except (OSError, UnidentifiedImageError, ValueError) as error:
+        raise ScanFailure("证据包图标不是有效图片。") from error
     copied_hash = _hash_file(sources[0]).upper()
     if copied_hash != expected_source_hash.upper():
         raise ScanFailure("证据包内源安装包 SHA-256 不匹配。")
@@ -779,10 +782,12 @@ def finalize_evidence(
         media_elapsed = round((time.monotonic() - media_started) * 1000)
 
         record_started = time.monotonic()
-        with Image.open(copied_icon) as icon_image:
-            icon_width, icon_height = icon_image.size
-        if icon_width != icon_height:
-            raise ScanFailure("图标不是正方形。")
+        try:
+            with Image.open(copied_icon) as icon_image:
+                icon_width, icon_height = icon_image.size
+                icon_image.verify()
+        except (OSError, UnidentifiedImageError, ValueError) as error:
+            raise ScanFailure("图标不是有效图片。") from error
         source_hash = _hash_file(copied_source).upper()
         recording_record = recording_by_path[selected_recording_path]
         manual_started = str((session.get("media_baseline") or {}).get("finished_local") or "")

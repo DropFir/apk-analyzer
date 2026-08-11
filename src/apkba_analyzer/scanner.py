@@ -555,16 +555,6 @@ def _icon_record(path: Path, findings: list[Finding]) -> dict[str, Any]:
         findings.append(Finding("error", "icon.invalid", f"图标不是有效图片：{error}"))
         return {}
 
-    if width != height:
-        findings.append(
-            Finding("error", "icon.not_square", f"图标必须为正方形，当前为 {width} × {height}。")
-        )
-    elif width < 256:
-        findings.append(
-            Finding(
-                "warning", "icon.low_resolution", f"图标仅 {width} × {height}，建议至少 256 × 256。"
-            )
-        )
     return {
         "fileName": path.name,
         "sizeBytes": path.stat().st_size,

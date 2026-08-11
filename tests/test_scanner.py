@@ -167,7 +167,7 @@ def test_apk_scan_warns_when_manifest_does_not_declare_target_sdk(
     )
 
 
-def test_non_square_icon_blocks_bundle(tmp_path: Path) -> None:
+def test_non_square_icon_is_accepted_and_dimensions_are_recorded(tmp_path: Path) -> None:
     source = tmp_path / "fixture.apk"
     icon = tmp_path / "icon.png"
     make_apk(source)
@@ -175,8 +175,11 @@ def test_non_square_icon_blocks_bundle(tmp_path: Path) -> None:
 
     report = scan_package(source, icon, profile="quick")
 
-    assert report["status"] == "blocked"
-    assert any(item["code"] == "icon.not_square" for item in report["findings"])
+    assert report["status"] in {"pass", "warning"}
+    assert report["icon"]["width"] == 512
+    assert report["icon"]["height"] == 400
+    assert report["icon"]["square"] is False
+    assert not any(item["code"].startswith("icon.") for item in report["findings"])
 
 
 def test_standalone_base_apk_with_required_splits_is_blocked(tmp_path: Path) -> None:

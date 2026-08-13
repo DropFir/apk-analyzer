@@ -12,6 +12,8 @@ from pathlib import Path, PurePosixPath
 from PySide6.QtCore import (
     QEvent,
     QObject,
+    QPoint,
+    QRect,
     QSettings,
     QSize,
     Qt,
@@ -27,7 +29,10 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
     QDropEvent,
+    QImage,
     QMouseEvent,
+    QPainter,
+    QPen,
     QPixmap,
     QWheelEvent,
 )
@@ -214,6 +219,10 @@ class ClickableImageLabel(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("点击查看大图")
+        self.set_image_path(image_path)
+
+    def set_image_path(self, image_path: str) -> None:
+        self.image_path = image_path
         self.setStyleSheet(
             "QLabel#mediaPreview {"
             "background:#101722;border:2px solid #d9e2ec;border-radius:10px;"
@@ -222,7 +231,7 @@ class ClickableImageLabel(QLabel):
             "border-color:#0d9275;background:#0b1220;"
             "}"
         )
-        pixmap = QPixmap(image_path)
+        pixmap = QPixmap(self.image_path)
         if pixmap.isNull():
             self.setText("无法预览")
             self.setStyleSheet(
@@ -232,7 +241,7 @@ class ClickableImageLabel(QLabel):
         else:
             self.setPixmap(
                 pixmap.scaled(
-                    preview_size,
+                    self.size(),
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
@@ -325,6 +334,180 @@ class ImagePreviewDialog(QDialog):
             1.0,
         )
         self._set_zoom(factor)
+
+
+def mosaic_image(image: QImage, region: QRect) -> QImage:
+    """Return a copy of *image* with the selected region pixelated."""
+
+    bounded = region.normalized().intersected(image.rect())
+    if bounded.width() < 2 or bounded.height() < 2:
+        return image.copy()
+    block_size = max(8, min(32, min(bounded.width(), bounded.height()) // 10))
+    reduced = image.copy(bounded).scaled(
+        max(1, bounded.width() // block_size),
+        max(1, bounded.height() // block_size),
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.FastTransformation,
+    )
+    pixelated = reduced.scaled(
+        bounded.size(),
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.FastTransformation,
+    )
+    result = image.copy()
+    painter = QPainter(result)
+    painter.drawImage(bounded.topLeft(), pixelated)
+    painter.end()
+    return result
+
+
+class MosaicCanvas(QWidget):
+    """One-to-one image canvas that turns a drag selection into an image rectangle."""
+
+    region_selected = Signal(object)
+
+    def __init__(self, image: QImage, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.image = image
+        self._start: QPoint | None = None
+        self._selection = QRect()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setFixedSize(image.size())
+
+    def set_image(self, image: QImage) -> None:
+        self.image = image
+        self.setFixedSize(image.size())
+        self.update()
+
+    def _point_in_image(self, point: QPoint) -> QPoint:
+        if self.image.isNull():
+            return QPoint()
+        return QPoint(
+            max(0, min(point.x(), self.image.width() - 1)),
+            max(0, min(point.y(), self.image.height() - 1)),
+        )
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.drawImage(0, 0, self.image)
+        if not self._selection.isNull():
+            painter.setPen(QPen(Qt.GlobalColor.white, 2, Qt.PenStyle.DashLine))
+            painter.drawRect(self._selection)
+        painter.end()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._start = self._point_in_image(event.position().toPoint())
+            self._selection = QRect(self._start, self._start)
+            self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._start is not None:
+            end_point = self._point_in_image(event.position().toPoint())
+            self._selection = QRect(self._start, end_point).normalized()
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._start is not None:
+            end_point = self._point_in_image(event.position().toPoint())
+            selected = QRect(self._start, end_point).normalized()
+            self._start = None
+            self._selection = QRect()
+            self.update()
+            if selected.width() >= 2 and selected.height() >= 2:
+                self.region_selected.emit(selected)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class ImageMosaicDialog(QDialog):
+    """Apply privacy mosaics to an image and save the result as a new file."""
+
+    def __init__(self, image_path: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.image = QImage(image_path)
+        self._undo_stack: list[QImage] = []
+        self.saved_path = ""
+        self.setWindowTitle(f"编辑图片 · {Path(image_path).name}")
+        self.resize(980, 760)
+        self.setMinimumSize(680, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        tip = QLabel("在图片上拖拽框选区域；松开鼠标后将立即添加马赛克。原图不会被修改。")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.canvas = MosaicCanvas(self.image, self)
+        self.canvas.region_selected.connect(self._apply_mosaic)
+        self.scroll.setWidget(self.canvas)
+        layout.addWidget(self.scroll, 1)
+
+        controls = QHBoxLayout()
+        self.undo_button = QPushButton("撤销")
+        self.undo_button.setEnabled(False)
+        save_button = QPushButton("另存为…")
+        close_button = QPushButton("关闭")
+        self.undo_button.clicked.connect(self._undo)
+        save_button.clicked.connect(self._save_as)
+        close_button.clicked.connect(self.reject)
+        controls.addWidget(self.undo_button)
+        controls.addStretch()
+        controls.addWidget(save_button)
+        controls.addWidget(close_button)
+        layout.addLayout(controls)
+
+        if self.image.isNull():
+            tip.setText("无法读取该图片，不能编辑。")
+            self.canvas.setEnabled(False)
+            save_button.setEnabled(False)
+
+    def _apply_mosaic(self, region: QRect) -> None:
+        self._undo_stack.append(self.image.copy())
+        self.image = mosaic_image(self.image, region)
+        self.canvas.set_image(self.image)
+        self.undo_button.setEnabled(True)
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self.image = self._undo_stack.pop()
+        self.canvas.set_image(self.image)
+        self.undo_button.setEnabled(bool(self._undo_stack))
+
+    def _save_as(self) -> None:
+        source = Path(self.image_path)
+        default = source.with_name(f"{source.stem}-已打码.png")
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            "保存打码后的图片",
+            str(default),
+            "PNG (*.png);;JPEG (*.jpg *.jpeg);;WebP (*.webp)",
+        )
+        if not path:
+            return
+        target = Path(path)
+        if not target.suffix:
+            target = target.with_suffix(".png")
+        if target.expanduser().resolve() == source.expanduser().resolve():
+            QMessageBox.information(self, "请另存", "为保留原图，请选择不同的文件名或位置。")
+            return
+        if not self.image.save(str(target)):
+            QMessageBox.warning(self, "保存失败", "无法保存编辑后的图片，请选择其他位置或格式。")
+            return
+        self.saved_path = str(target.resolve())
+        self.accept()
 
 
 class DeviceWorker(QObject):
@@ -837,6 +1020,9 @@ class MediaReviewDialog(QDialog):
         super().__init__(parent)
         self.review = review
         self.screenshot_checks: dict[str, QCheckBox] = {}
+        self._screenshot_records: dict[str, dict[str, object]] = {}
+        self._screenshot_previews: dict[str, ClickableImageLabel] = {}
+        self._screenshot_edit_buttons: dict[str, QPushButton] = {}
         self.media_previews: list[ClickableImageLabel] = []
         self.setObjectName("mediaReviewDialog")
         self.setWindowTitle("确认本次截图与录屏")
@@ -854,7 +1040,9 @@ class MediaReviewDialog(QDialog):
         screenshot_group.setMinimumWidth(self.SCREENSHOT_GALLERY_MINIMUM_WIDTH + 30)
         self.screenshot_group = screenshot_group
         screenshot_layout = QVBoxLayout(screenshot_group)
-        screenshot_hint = QLabel("点击任意缩略图可查看大图；只勾选属于本次应用的截图。")
+        screenshot_hint = QLabel(
+            "点击缩略图可查看大图；需要隐去敏感内容时，点击“编辑马赛克”。"
+        )
         screenshot_hint.setObjectName("groupHint")
         screenshot_hint.setWordWrap(True)
         screenshot_layout.addWidget(screenshot_hint)
@@ -879,6 +1067,7 @@ class MediaReviewDialog(QDialog):
             check.setChecked(True)
             check.setToolTip(remote_path)
             self.screenshot_checks[remote_path] = check
+            self._screenshot_records[remote_path] = record
             card = QWidget()
             card.setObjectName("mediaCard")
             card.setMinimumWidth(self.SCREENSHOT_CARD_MINIMUM_WIDTH)
@@ -889,8 +1078,16 @@ class MediaReviewDialog(QDialog):
             preview = ClickableImageLabel(local_path, self.SCREENSHOT_PREVIEW_SIZE)
             preview.clicked.connect(self._open_image_preview)
             self.media_previews.append(preview)
+            self._screenshot_previews[remote_path] = preview
             card_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignCenter)
             card_layout.addWidget(check)
+            edit_button = QPushButton("编辑马赛克")
+            edit_button.setObjectName("softButton")
+            edit_button.clicked.connect(
+                lambda _checked=False, path=remote_path: self._edit_screenshot(path)
+            )
+            self._screenshot_edit_buttons[remote_path] = edit_button
+            card_layout.addWidget(edit_button)
             row_index, column_index = divmod(index, self.SCREENSHOT_COLUMNS)
             screenshot_rows.addWidget(card, row_index, column_index)
         if not screenshots:
@@ -1036,6 +1233,25 @@ class MediaReviewDialog(QDialog):
     @Slot(str)
     def _open_image_preview(self, image_path: str) -> None:
         ImagePreviewDialog(image_path, self).exec()
+
+    def _edit_screenshot(self, remote_path: str) -> None:
+        record = self._screenshot_records.get(remote_path)
+        if not record:
+            return
+        image_path = str(record.get("localPath") or "")
+        dialog = ImageMosaicDialog(image_path, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_path:
+            self._use_edited_screenshot(remote_path, dialog.saved_path)
+
+    def _use_edited_screenshot(self, remote_path: str, edited_path: str) -> None:
+        record = self._screenshot_records.get(remote_path)
+        preview = self._screenshot_previews.get(remote_path)
+        if not record or not preview:
+            return
+        record["localPath"] = edited_path
+        record["operatorRedacted"] = True
+        preview.set_image_path(edited_path)
+        self._screenshot_edit_buttons[remote_path].setText("重新编辑")
 
     def _choose_output_root(self) -> None:
         path = QFileDialog.getExistingDirectory(

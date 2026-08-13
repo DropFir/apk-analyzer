@@ -5,16 +5,18 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QThread, QUrl
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap, QWheelEvent
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QRect, Qt, QThread, QUrl
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QPixmap, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMessageBox
 
 from apkba_analyzer.app import (
     DropCard,
+    ImageMosaicDialog,
     MainWindow,
     MediaReviewDialog,
     PhoneImageExportDialog,
+    mosaic_image,
 )
 
 
@@ -56,6 +58,72 @@ def test_main_window_uses_landscape_layout(
     assert not hasattr(window, "copy_button")
     assert window.clear_button.text() == "清空 / 放弃本次"
     window.close()
+
+
+def test_mosaic_image_pixelates_only_the_selected_region(qt_app: QApplication) -> None:
+    image = QImage(40, 40, QImage.Format.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            image.setPixelColor(x, y, QColor(x * 6, y * 6, 30))
+
+    result = mosaic_image(image, QRect(4, 4, 24, 24))
+
+    assert result.pixelColor(5, 5) == result.pixelColor(6, 6)
+    assert image.pixelColor(5, 5) != image.pixelColor(6, 6)
+    assert result.pixelColor(2, 2) == image.pixelColor(2, 2)
+
+
+def test_image_mosaic_dialog_can_undo_an_edit(qt_app: QApplication, tmp_path: Path) -> None:
+    source = tmp_path / "icon.png"
+    image = QImage(40, 40, QImage.Format.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            image.setPixelColor(x, y, QColor(x * 6, y * 6, 30))
+    assert image.save(str(source))
+    dialog = ImageMosaicDialog(str(source))
+    original = dialog.image.copy()
+
+    dialog._apply_mosaic(QRect(4, 4, 24, 24))
+
+    assert dialog.undo_button.isEnabled()
+    assert dialog.image.pixelColor(5, 5) == dialog.image.pixelColor(6, 6)
+    dialog._undo()
+    assert dialog.image == original
+    assert not dialog.undo_button.isEnabled()
+    dialog.close()
+
+
+def test_media_review_uses_the_edited_screenshot_copy(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    original = tmp_path / "original.png"
+    edited = tmp_path / "edited.png"
+    image = QImage(16, 16, QImage.Format.Format_ARGB32)
+    image.fill(QColor("#087763"))
+    assert image.save(str(original))
+    image.fill(QColor("#17233b"))
+    assert image.save(str(edited))
+    remote_path = "/sdcard/DCIM/Screenshots/Fixture.png"
+    review = {
+        "screenshots": [
+            {
+                "remote_path": remote_path,
+                "file_name": "Fixture.png",
+                "localPath": str(original),
+            }
+        ],
+        "recordingFrames": [],
+        "visibilitySuggestion": "visible",
+    }
+    dialog = MediaReviewDialog(review, str(tmp_path))
+
+    dialog._use_edited_screenshot(remote_path, str(edited))
+
+    assert review["screenshots"][0]["localPath"] == str(edited)
+    assert review["screenshots"][0]["operatorRedacted"] is True
+    assert dialog._screenshot_previews[remote_path].image_path == str(edited)
+    assert dialog._screenshot_edit_buttons[remote_path].text() == "重新编辑"
+    dialog.close()
 
 
 def test_media_review_is_landscape_and_previews_are_clickable(

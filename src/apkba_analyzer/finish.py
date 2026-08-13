@@ -701,9 +701,13 @@ def finalize_evidence(
     source_root.mkdir()
     client = adb or AdbClient()
     review_screenshots = {
-        str(record["remote_path"]): Path(str(record["localPath"]))
+        str(record["remote_path"]): dict(record)
         for record in (review or {}).get("screenshots", [])
         if record.get("remote_path") and record.get("localPath")
+    }
+    review_screenshot_paths = {
+        remote_path: Path(str(record["localPath"]))
+        for remote_path, record in review_screenshots.items()
     }
     reviewed_video = Path(str((review or {}).get("localRecordingPath") or ""))
     media_started = time.monotonic()
@@ -725,20 +729,24 @@ def finalize_evidence(
                 copied = _copy_reviewed_screenshot(
                     record,
                     screenshots_root,
-                    review_screenshots,
+                    review_screenshot_paths,
                     client,
                     serial,
                 )
-                screenshot_records.append(
-                    {
-                        "remote_path": remote,
-                        "modified_epoch_seconds": record["modified_epoch_seconds"],
-                        "size_bytes": copied.stat().st_size,
-                        "sha256": _hash_file(copied).upper(),
-                        "source": "device_post_baseline_capture",
-                        "package_path": f"screenshots/{copied.name}",
-                    }
-                )
+                media_record = {
+                    "remote_path": remote,
+                    "modified_epoch_seconds": record["modified_epoch_seconds"],
+                    "size_bytes": copied.stat().st_size,
+                    "sha256": _hash_file(copied).upper(),
+                    "source": "device_post_baseline_capture",
+                    "package_path": f"screenshots/{copied.name}",
+                }
+                if review_screenshots.get(remote, {}).get("operatorRedacted"):
+                    media_record["source"] = (
+                        "operator_redacted_copy_of_device_post_baseline_capture"
+                    )
+                    media_record["operator_redaction"] = "mosaic"
+                screenshot_records.append(media_record)
             if restriction:
                 restriction_name = _portable_name(restriction.name, "screenshot_restricted.png")
                 restriction_target = screenshots_root / restriction_name

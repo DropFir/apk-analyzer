@@ -362,6 +362,43 @@ def test_protected_review_with_representative_frame_is_accepted(tmp_path: Path) 
     assert recording_record["representative_frame_count"] == 1
 
 
+def test_redacted_review_screenshot_is_labeled_as_an_operator_copy(tmp_path: Path) -> None:
+    bundle, remote_files = make_finish_bundle(tmp_path)
+    screenshot = "/sdcard/DCIM/Screenshots/Screenshot_Example.png"
+    recording = "/sdcard/DCIM/Screen recordings/Example.mp4"
+    redacted = tmp_path / "redacted.png"
+    Image.new("RGB", (400, 800), "black").save(redacted)
+    review = {
+        "screenshots": [
+            {
+                "remote_path": screenshot,
+                "localPath": str(redacted),
+                "operatorRedacted": True,
+            }
+        ],
+        "selectedRecording": {"remote_path": recording},
+        "localRecordingPath": str(remote_files[recording]),
+        "recordingFrames": [],
+    }
+
+    result = finalize_evidence(
+        bundle,
+        [screenshot],
+        recording,
+        content_visibility="visible",
+        review_method="operator_confirmed_playback",
+        review=review,
+        adb=FakeFinishAdb(remote_files),
+    )
+
+    observations = json.loads(
+        (Path(result["packagePath"]) / "observations.json").read_text(encoding="utf-8")
+    )
+    media_record = observations["media"]["screenshots"][0]
+    assert media_record["source"] == "operator_redacted_copy_of_device_post_baseline_capture"
+    assert media_record["operator_redaction"] == "mosaic"
+
+
 def test_visibility_suggestion_distinguishes_black_and_visible_frames(
     tmp_path: Path,
 ) -> None:

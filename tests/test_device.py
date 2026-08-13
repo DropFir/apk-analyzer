@@ -245,10 +245,12 @@ class FakePrepareAdb:
         exact_launch_ok: bool = True,
         focused: str = "com.example.app/.MainActivity",
         visible_texts: list[str] | None = None,
+        installed: bool = False,
     ):
         self.install_ok = install_ok
         self.exact_launch_ok = exact_launch_ok
         self.focused = focused
+        self.installed = installed
         self._visible_texts = visible_texts or []
         self.calls: list[tuple[str | None, list[str]]] = []
 
@@ -262,7 +264,11 @@ class FakePrepareAdb:
     ):
         self.calls.append((serial, arguments))
         if arguments[:3] == ["shell", "pm", "path"]:
-            return completed("", 1)
+            return (
+                completed("package:/data/app/com.example.app/base.apk\n")
+                if self.installed
+                else completed("", 1)
+            )
         if arguments[0] == "install":
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
         if arguments[0] == "install-multiple":
@@ -383,6 +389,45 @@ def test_prepare_writes_agent1_pending_session_without_capturing_media(
     flattened = " ".join(" ".join(arguments) for _serial, arguments in adb.calls)
     assert "screencap" not in flattened
     assert "screenrecord" not in flattened
+
+
+def test_prepare_reuses_strictly_verified_google_play_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    adb = FakePrepareAdb(installed=True)
+    verified = {
+        "package_name": "com.example.app",
+        "version_code": "1",
+        "version_name": "1.0",
+        "installer_package": "com.android.vending",
+        "initiating_package": "com.android.vending",
+        "certificate_sha256": ["A" * 64],
+    }
+    monkeypatch.setattr(
+        "apkba_analyzer.device._verified_google_play_install",
+        lambda *_args, **_kwargs: verified,
+    )
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    result = prepare_bundle(
+        report,
+        bundle,
+        "PHONE-PLAY",
+        adb=adb,
+        reuse_verified_google_play_install=True,
+    )
+
+    assert result["installReused"] is True
+    assert not any(
+        arguments[0] in {"install", "install-multiple"}
+        for _serial, arguments in adb.calls
+    )
+    pending = json.loads((bundle / ".apkba-pending-session.json").read_text())
+    assert pending["install"]["result"] == "reused_verified_google_play_install"
+    assert pending["install"]["method"] == "existing_verified_google_play_install"
+    assert pending["install"]["reused_google_play_install"] == verified
 
 
 def test_prepare_blocks_incompatible_native_abi_before_install_or_phone_write(

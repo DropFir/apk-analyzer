@@ -20,8 +20,8 @@ from typing import Any
 
 from apkba_analyzer.intake import create_intake_bundle
 from apkba_analyzer.models import ScanFailure
-from apkba_analyzer.scanner import _hash_file, scan_package
-from apkba_analyzer.tools import _subprocess_creation_flags
+from apkba_analyzer.scanner import _hash_file, _verify_apk_signature, scan_package
+from apkba_analyzer.tools import _subprocess_creation_flags, find_apksigner
 
 SCREENSHOT_DIRECTORY = "/sdcard/DCIM/Screenshots"
 RECORDING_DIRECTORY = "/sdcard/DCIM/Screen recordings"
@@ -42,6 +42,95 @@ SYSTEM_MANAGED_ENTRYPOINTS = {
 RunProcess = Callable[..., subprocess.CompletedProcess[str]]
 Progress = Callable[[int, str], None]
 LowTargetSdkConfirmation = Callable[[dict[str, Any]], bool]
+
+
+def _package_dump_value(output: str, name: str) -> str | None:
+    match = re.search(rf"(?m)^\s*{re.escape(name)}=([^\r\n]+)$", output)
+    return match.group(1).strip() if match else None
+
+
+def _verified_google_play_install(
+    client: AdbClient,
+    serial: str,
+    package_name: str,
+    report: dict[str, Any],
+    package_paths_output: str,
+) -> dict[str, Any] | None:
+    """Verify an exact Play-installed build before reusing it for device capture."""
+
+    remote_paths = [
+        line.partition(":")[2].strip()
+        for line in package_paths_output.splitlines()
+        if line.startswith("package:") and line.partition(":")[2].strip()
+    ]
+    base_path = next(
+        (path for path in remote_paths if PurePosixPath(path).name == "base.apk"),
+        remote_paths[0] if remote_paths else "",
+    )
+    if not base_path:
+        return None
+
+    package_dump = client.invoke(
+        ["shell", "dumpsys", "package", package_name],
+        serial=serial,
+        allow_failure=True,
+        timeout=60,
+    )
+    if package_dump.returncode:
+        return None
+    dump = package_dump.stdout or ""
+    app = report.get("app") or {}
+    expected_version_code = str(app.get("versionCode") or "").strip()
+    expected_version_name = str(app.get("versionName") or "").strip()
+    installed_version_code = (_package_dump_value(dump, "versionCode") or "").split()[0]
+    installed_version_name = _package_dump_value(dump, "versionName") or ""
+    installer = _package_dump_value(dump, "installerPackageName") or ""
+    initiating = _package_dump_value(dump, "initiatingPackageName") or ""
+    if (
+        not expected_version_code
+        or installed_version_code != expected_version_code
+        or (expected_version_name and installed_version_name != expected_version_name)
+        or installer != "com.android.vending"
+        or initiating != "com.android.vending"
+    ):
+        return None
+
+    expected_certificates = {
+        str(value).replace(":", "").upper()
+        for value in (report.get("signature") or {}).get("certificateSha256") or []
+        if str(value).strip()
+    }
+    if not expected_certificates:
+        return None
+    with tempfile.TemporaryDirectory(prefix="apkba-installed-signature-") as temporary:
+        installed_base = Path(temporary) / "base.apk"
+        pulled = client.invoke(
+            ["pull", base_path, str(installed_base)],
+            serial=serial,
+            allow_failure=True,
+            timeout=180,
+        )
+        if pulled.returncode or not installed_base.is_file():
+            return None
+        installed_signature = _verify_apk_signature(
+            installed_base,
+            find_apksigner(),
+        )
+    installed_certificates = {
+        str(value).replace(":", "").upper()
+        for value in installed_signature.get("certificateSha256") or []
+        if str(value).strip()
+    }
+    if installed_certificates != expected_certificates:
+        return None
+    return {
+        "package_name": package_name,
+        "version_code": installed_version_code,
+        "version_name": installed_version_name,
+        "installer_package": installer,
+        "initiating_package": initiating,
+        "certificate_sha256": sorted(installed_certificates),
+    }
 
 
 def _bundled_root() -> Path | None:
@@ -745,6 +834,7 @@ def prepare_bundle(
     progress: Progress | None = None,
     device: dict[str, Any] | None = None,
     low_target_sdk_bypass: dict[str, Any] | None = None,
+    reuse_verified_google_play_install: bool = False,
 ) -> dict[str, Any]:
     """Install, launch, record a baseline, and write Agent1's pending marker."""
 
@@ -836,54 +926,84 @@ def prepare_bundle(
     if handoff["source"]["format"] in {"xapk", "apkm", "apks"}:
         selected_splits = select_xapk_splits(report.get("xapk") or {}, device)
 
-    _progress(progress, 78, "安装到已选择的手机…")
+    reusable_play_install = (
+        _verified_google_play_install(
+            client,
+            serial,
+            package_name,
+            report,
+            installed.stdout,
+        )
+        if was_installed and reuse_verified_google_play_install
+        else None
+    )
+
+    _progress(
+        progress,
+        78,
+        "复用已验证的 Google Play 同版本安装…"
+        if reusable_play_install
+        else "安装到已选择的手机…",
+    )
     install_started = _iso_now()
     bypass_low_target_sdk = low_target_sdk_bypass is not None
-    with tempfile.TemporaryDirectory(prefix="apkba-prepare-") as temporary:
-        source_format = handoff["source"]["format"]
-        if source_format == "apk":
-            install_arguments = ["install"]
-            if bypass_low_target_sdk:
-                install_arguments.append("--bypass-low-target-sdk-block")
-            install_arguments.extend(["-r", str(source)])
-            install_method = (
-                "adb install --bypass-low-target-sdk-block -r"
-                if bypass_low_target_sdk
-                else "adb install -r"
-            )
-        else:
-            split_paths = _extract_splits(source, selected_splits, Path(temporary))
-            if source_format == "apks" and len(split_paths) == 1:
+    if reusable_play_install:
+        install_method = "existing_verified_google_play_install"
+        install_status = "reused_verified_google_play_install"
+    else:
+        with tempfile.TemporaryDirectory(prefix="apkba-prepare-") as temporary:
+            source_format = handoff["source"]["format"]
+            if source_format == "apk":
                 install_arguments = ["install"]
                 if bypass_low_target_sdk:
                     install_arguments.append("--bypass-low-target-sdk-block")
-                install_arguments.extend(["-r", str(split_paths[0])])
+                install_arguments.extend(["-r", str(source)])
                 install_method = (
-                    "adb install --bypass-low-target-sdk-block -r (APKS standalone)"
+                    "adb install --bypass-low-target-sdk-block -r"
                     if bypass_low_target_sdk
-                    else "adb install -r (APKS standalone)"
+                    else "adb install -r"
                 )
             else:
-                install_arguments = ["install-multiple"]
-                if bypass_low_target_sdk:
-                    install_arguments.append("--bypass-low-target-sdk-block")
-                install_arguments.extend(["-r", *map(str, split_paths)])
-                install_method = (
-                    "adb install-multiple --bypass-low-target-sdk-block -r"
-                    if bypass_low_target_sdk
-                    else "adb install-multiple -r"
-                )
-        install = client.invoke(install_arguments, serial=serial, allow_failure=True, timeout=300)
-    install_output = (install.stdout or "") + "\n" + (install.stderr or "")
-    if install.returncode or not re.search(r"(?m)^Success\s*$", install_output):
-        raise ScanFailure(
-            f"安装没有成功；工具不会自动卸载、降级或重试。\n{_output_summary(install_output)}"
-        )
+                split_paths = _extract_splits(source, selected_splits, Path(temporary))
+                if source_format == "apks" and len(split_paths) == 1:
+                    install_arguments = ["install"]
+                    if bypass_low_target_sdk:
+                        install_arguments.append("--bypass-low-target-sdk-block")
+                    install_arguments.extend(["-r", str(split_paths[0])])
+                    install_method = (
+                        "adb install --bypass-low-target-sdk-block -r (APKS standalone)"
+                        if bypass_low_target_sdk
+                        else "adb install -r (APKS standalone)"
+                    )
+                else:
+                    install_arguments = ["install-multiple"]
+                    if bypass_low_target_sdk:
+                        install_arguments.append("--bypass-low-target-sdk-block")
+                    install_arguments.extend(["-r", *map(str, split_paths)])
+                    install_method = (
+                        "adb install-multiple --bypass-low-target-sdk-block -r"
+                        if bypass_low_target_sdk
+                        else "adb install-multiple -r"
+                    )
+            install = client.invoke(
+                install_arguments,
+                serial=serial,
+                allow_failure=True,
+                timeout=300,
+            )
+        install_output = (install.stdout or "") + "\n" + (install.stderr or "")
+        if install.returncode or not re.search(r"(?m)^Success\s*$", install_output):
+            raise ScanFailure(
+                "安装没有成功；工具不会自动卸载、降级或重试。\n"
+                f"{_output_summary(install_output)}"
+            )
+        install_status = "success"
     setup["install"] = {
         "started_local": install_started,
         "finished_local": _iso_now(),
-        "status": "success",
+        "status": install_status,
         "low_target_sdk_bypass_used": bypass_low_target_sdk,
+        "reused_google_play_install": reusable_play_install,
     }
 
     _progress(progress, 86, "启动应用并检查前台页面…")
@@ -1060,12 +1180,13 @@ def prepare_bundle(
             "features": device.get("features"),
         },
         "install": {
-            "result": "success",
+            "result": install_status,
             "method": install_method,
             "was_installed": was_installed,
             "installed_splits": selected_splits,
             "low_target_sdk_bypass_used": bypass_low_target_sdk,
             "low_target_sdk_bypass": low_target_sdk_bypass,
+            "reused_google_play_install": reusable_play_install,
         },
         "launch": {
             "result": launch_result,
@@ -1116,6 +1237,7 @@ def prepare_bundle(
         "focusedActivity": focused,
         "lowTargetSdkBypassUsed": bypass_low_target_sdk,
         "lowTargetSdkBypass": low_target_sdk_bypass,
+        "installReused": bool(reusable_play_install),
     }
 
 
@@ -1130,6 +1252,7 @@ def scan_create_and_prepare(
     adb: AdbClient | None = None,
     progress: Progress | None = None,
     confirm_low_target_sdk: LowTargetSdkConfirmation | None = None,
+    reuse_verified_google_play_install: bool = False,
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     """Run the editor workflow once: scan, create intake, install, launch, baseline."""
 
@@ -1185,5 +1308,6 @@ def scan_create_and_prepare(
             progress=progress,
             device=device,
             low_target_sdk_bypass=low_target_sdk_bypass,
+            reuse_verified_google_play_install=reuse_verified_google_play_install,
         )
         return report, bundle, result

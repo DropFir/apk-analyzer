@@ -51,6 +51,7 @@ $Python = Join-Path $Venv 'Scripts\python.exe'
     --workpath (Join-Path $Root '.pyinstaller-work') `
     --paths (Join-Path $Root 'src') `
     --collect-data androguard `
+    --collect-binaries imageio_ffmpeg `
     --hidden-import androguard.core.apk `
     --add-data "$(Join-Path $Root 'src\apkba_analyzer\assets');assets" `
     --add-binary "$Adb;platform-tools" `

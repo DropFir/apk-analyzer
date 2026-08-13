@@ -216,31 +216,41 @@ def _asset_path(name: str) -> Path | None:
 def _ffmpeg_frames(video: Path, output: Path) -> list[Path]:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
-    if not ffmpeg or not ffprobe:
-        return []
-    probe = subprocess.run(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(video),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=_subprocess_creation_flags(),
-    )
-    try:
-        duration = float(probe.stdout.strip())
-    except ValueError:
-        return []
-    if probe.returncode or duration <= 0:
+    duration = 0.0
+    if ffmpeg and ffprobe:
+        probe = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_subprocess_creation_flags(),
+        )
+        try:
+            duration = float(probe.stdout.strip())
+        except ValueError:
+            return []
+        if probe.returncode:
+            return []
+    else:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            _frame_count, duration = imageio_ffmpeg.count_frames_and_secs(str(video))
+        except (ImportError, OSError, RuntimeError, ValueError):
+            return []
+    if not ffmpeg or duration <= 0:
         return []
     frames: list[Path] = []
     for index, fraction in enumerate((0.2, 0.5, 0.8), start=1):

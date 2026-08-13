@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
 from apkba_analyzer.finish import (
+    _ffmpeg_frames,
     _visibility_suggestion,
     finalize_evidence,
     finish_preflight,
@@ -369,6 +372,36 @@ def test_visibility_suggestion_distinguishes_black_and_visible_frames(
 
     assert _visibility_suggestion([black])[0] == "protected_black_screen"
     assert _visibility_suggestion([visible])[0] == "visible"
+
+
+def test_ffmpeg_frames_use_bundled_runtime_without_system_tools(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    video = tmp_path / "recording.mp4"
+    video.write_bytes(fake_mp4())
+    output = tmp_path / "frames"
+    output.mkdir()
+    bundled = SimpleNamespace(
+        get_ffmpeg_exe=lambda: "/bundled/ffmpeg",
+        count_frames_and_secs=lambda _path: (90, 3.0),
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        Image.new("RGB", (720, 1280), "white").save(command[-1])
+        return completed()
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", bundled)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    frames = _ffmpeg_frames(video, output)
+
+    assert len(frames) == 3
+    assert all(path.is_file() for path in frames)
+    assert all(command[0] == "/bundled/ffmpeg" for command in commands)
 
 
 def test_validator_rejects_forbidden_residue(tmp_path: Path) -> None:

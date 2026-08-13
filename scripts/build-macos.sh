@@ -34,6 +34,7 @@ fi
   --name 'APKBA-Analyzer' \
   --paths "$ROOT/src" \
   --collect-data androguard \
+  --collect-binaries imageio_ffmpeg \
   --hidden-import androguard.core.apk \
   --add-data "$ROOT/src/apkba_analyzer/assets:assets" \
   --add-binary "$ADB:platform-tools" \

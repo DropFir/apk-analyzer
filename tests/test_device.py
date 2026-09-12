@@ -273,6 +273,8 @@ class FakePrepareAdb:
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
         if arguments[0] == "install-multiple":
             return completed("Success\n" if self.install_ok else "Failure [INSTALL_FAILED]\n", 0)
+        if arguments[:3] == ["shell", "am", "force-stop"]:
+            return completed()
         if arguments[:4] == ["shell", "am", "start", "-n"]:
             return completed("Starting\n" if self.exact_launch_ok else "Error: bad activity\n")
         if arguments[:4] == ["shell", "am", "start", "-a"]:
@@ -813,6 +815,39 @@ def test_prepare_opens_and_confirms_health_connect_system_settings_entry(
     assert pending["launch"]["result"] == "success_system_settings_entry"
     assert pending["launch"]["system_entry_foreground_confirmed"] is True
     assert pending["launch"]["visible_texts"] == ["Health Connect", "Your health apps"]
+
+
+def test_prepare_accepts_non_launchable_service_for_app_info_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report, bundle = make_bundle(tmp_path)
+    report["app"].update(
+        {
+            "packageName": "com.dsi.ant.service.socket",
+            "applicationLabel": "ANT Radio Service",
+            "launcherActivity": None,
+            "launcherCategory": None,
+        }
+    )
+    adb = FakePrepareAdb(
+        focused="com.sec.android.app.launcher/.activities.LauncherActivity"
+    )
+    monkeypatch.setattr("apkba_analyzer.device.time.sleep", lambda _value: None)
+
+    result = prepare_bundle(report, bundle, "PHONE-SERVICE", adb=adb)
+
+    pending = json.loads(
+        (bundle / ".apkba-pending-session.json").read_text(encoding="utf-8")
+    )
+    assert not any(
+        arguments[:2] == ["shell", "monkey"]
+        for _serial, arguments in adb.calls
+    )
+    assert result["launchStatus"] == "success_no_launcher_app_info_only"
+    assert pending["launch"]["result"] == "success_no_launcher_app_info_only"
+    assert pending["launch"]["method"] == "no_launcher_app_info_only"
+    assert pending["launch"]["reason"] == "manifest_has_no_launcher_activity"
 
 
 def test_prepare_installs_apkm_with_install_multiple(

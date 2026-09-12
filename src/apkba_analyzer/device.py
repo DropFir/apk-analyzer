@@ -1006,6 +1006,26 @@ def prepare_bundle(
         "reused_google_play_install": reusable_play_install,
     }
 
+    if reusable_play_install:
+        reset_started = _iso_now()
+        reset = client.invoke(
+            ["shell", "am", "force-stop", package_name],
+            serial=serial,
+            allow_failure=True,
+            timeout=30,
+        )
+        if reset.returncode:
+            raise ScanFailure(
+                "无法在复用 Google Play 安装后恢复干净启动状态："
+                f"{_output_summary((reset.stdout or '') + chr(10) + (reset.stderr or ''))}"
+            )
+        setup["reuse_launch_reset"] = {
+            "started_local": reset_started,
+            "finished_local": _iso_now(),
+            "status": "success",
+            "method": "am force-stop",
+        }
+
     _progress(progress, 86, "启动应用并检查前台页面…")
     launch_started = _iso_now()
     component = _launch_component(package_name, app.get("launcherActivity"))
@@ -1013,6 +1033,7 @@ def prepare_bundle(
         app.get("launcherCategory") or PHONE_LAUNCHER_CATEGORY
     )
     system_entry = SYSTEM_MANAGED_ENTRYPOINTS.get(package_name)
+    no_launcher_app_info_only = not component and not system_entry
     fallback_used = False
     if component:
         primary = client.invoke(
@@ -1043,21 +1064,18 @@ def prepare_bundle(
         )
         launch_method = "am_start_system_settings_action"
     else:
-        primary = client.invoke(
-            [
-                "shell",
-                "monkey",
-                "-p",
-                package_name,
-                "-c",
-                launcher_category,
-                "1",
-            ],
-            serial=serial,
-            allow_failure=True,
+        # A service/provider package can be a valid Android installation while
+        # intentionally declaring no launcher activity.  Monkey cannot create
+        # a launcher entry for it, so preserve the successful installation and
+        # hand the exact package to the App-info-only evidence path.
+        primary = subprocess.CompletedProcess(
+            [],
+            0,
+            "Manifest declares no launcher activity; App info only.\n",
+            "",
         )
-        accepted = primary.returncode == 0
-        launch_method = "monkey"
+        accepted = True
+        launch_method = "no_launcher_app_info_only"
     final = primary
     if not accepted and component:
         fallback_used = True
@@ -1083,7 +1101,10 @@ def prepare_bundle(
         and accepted
         and focused_package in set(system_entry["foregroundPackages"])
     )
-    if focused and focused.startswith(package_name + "/"):
+    if no_launcher_app_info_only:
+        launch_result = "success_no_launcher_app_info_only"
+        launch_reason = "manifest_has_no_launcher_activity"
+    elif focused and focused.startswith(package_name + "/"):
         launch_result, launch_reason = "success", None
     elif system_entry_confirmed:
         launch_result = "success_system_settings_entry"

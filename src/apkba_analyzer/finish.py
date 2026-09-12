@@ -492,6 +492,15 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
         observations = json.loads(observations_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ScanFailure("observations.json 无法解析。") from error
+    is_mod = observations.get("isMod")
+    package_variant = observations.get("packageVariant")
+    mod_info = observations.get("modInfo")
+    if not isinstance(is_mod, bool):
+        raise ScanFailure("证据包缺少有效的 isMod 标记。")
+    if package_variant != ("mod" if is_mod else "original"):
+        raise ScanFailure("证据包的 packageVariant 与 isMod 不一致。")
+    if not isinstance(mod_info, str) or (not is_mod and mod_info):
+        raise ScanFailure("证据包的 modInfo 无效。")
     source_root = package / "source_package"
     screenshots_root = package / "screenshots"
     videos_root = package / "videos"
@@ -575,6 +584,8 @@ def finalize_evidence(
     content_visibility: str,
     review_method: str,
     operator_reported_protected_media: bool = False,
+    is_mod: bool = False,
+    mod_info: str = "",
     local_restriction_image: str | os.PathLike[str] | None = None,
     output_root: str | os.PathLike[str] | None = None,
     review: dict[str, Any] | None = None,
@@ -610,6 +621,9 @@ def finalize_evidence(
         raise ScanFailure("录屏内容可见性分类无效。")
     if review_method not in REVIEW_METHODS:
         raise ScanFailure("录屏审查方式无效。")
+    is_mod = bool(is_mod)
+    normalized_mod_info = str(mod_info).strip() if is_mod else ""
+    package_variant = "mod" if is_mod else "original"
     if operator_reported_protected_media:
         if content_visibility == "visible":
             raise ScanFailure("已报告黑屏/受保护内容时不能选择“可见”。")
@@ -821,6 +835,9 @@ def finalize_evidence(
             manual_wait_ms = None
         observations = {
             "schema_version": 3,
+            "isMod": is_mod,
+            "packageVariant": package_variant,
+            "modInfo": normalized_mod_info,
             "app": {
                 "application_label": app.get("application_label"),
                 "application_label_source": app.get("application_label_source"),
@@ -933,7 +950,11 @@ def finalize_evidence(
                     ),
                     "remote_path": selected_recording_path,
                     "historical_package_path": None,
-                    "source": "device_post_baseline_capture",
+                    "source": (
+                        "deterministic_edit_of_device_post_baseline_capture"
+                        if (review or {}).get("videoEdit")
+                        else "device_post_baseline_capture"
+                    ),
                     "modified_epoch_seconds": recording_record[
                         "modified_epoch_seconds"
                     ],
@@ -944,6 +965,7 @@ def finalize_evidence(
                     "representative_frame_count": len(
                         (review or {}).get("recordingFrames") or []
                     ),
+                    "editing": (review or {}).get("videoEdit"),
                 },
             },
             "icon": {
@@ -999,6 +1021,9 @@ def finalize_evidence(
                 if content_visibility == "visible"
                 else f"present_{content_visibility}"
             ),
+            "isMod": is_mod,
+            "packageVariant": package_variant,
+            "modInfo": normalized_mod_info,
             "versionUpdateNotesStatus": "not_searched_fast_manual",
             "sourceSha256": source_hash,
             "validation": validation,

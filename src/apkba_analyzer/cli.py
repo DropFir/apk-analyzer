@@ -73,6 +73,12 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     finish.add_argument("--operator-reported-protected-media", action="store_true")
+    finish.add_argument("--mod", action="store_true", help="mark the package as a MOD")
+    finish.add_argument(
+        "--mod-info",
+        default="",
+        help="optional English MOD description, for example: MOD, Unlocked Content",
+    )
     finish.add_argument("--restriction-image", type=Path)
     finish.add_argument("--review-frame", action="append", type=Path, default=[])
     subparsers.add_parser("devices", help="list USB-debugging devices without changing them")
@@ -133,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "finish":
+            if args.mod_info and not args.mod:
+                raise ScanFailure("--mod-info 需要与 --mod 一起使用。")
             missing_frames = [path for path in args.review_frame if not path.is_file()]
             if missing_frames:
                 raise ScanFailure(f"代表帧不存在：{missing_frames[0]}")
@@ -145,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
                 operator_reported_protected_media=(
                     args.operator_reported_protected_media
                 ),
+                is_mod=args.mod,
+                mod_info=args.mod_info,
                 local_restriction_image=args.restriction_image,
                 output_root=args.output,
                 review={

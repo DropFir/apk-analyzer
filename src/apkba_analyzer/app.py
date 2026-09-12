@@ -699,6 +699,8 @@ class FinalizeWorker(QObject):
                 operator_reported_protected_media=bool(
                     self.choices["operatorReportedProtectedMedia"]
                 ),
+                is_mod=bool(self.choices["isMod"]),
+                mod_info=str(self.choices["modInfo"]),
                 local_restriction_image=(
                     str(self.choices["localRestrictionImage"])
                     if self.choices.get("localRestrictionImage")
@@ -1197,6 +1199,19 @@ class MediaReviewDialog(QDialog):
         output_row.addWidget(output_button)
         layout.addLayout(output_row)
 
+        mod_row = QHBoxLayout()
+        self.is_mod_check = QCheckBox("这是 MOD")
+        self.mod_info_label = QLabel("modInfo（英文）")
+        self.mod_info_edit = QLineEdit()
+        self.mod_info_edit.setPlaceholderText("例如：MOD, Unlocked Content")
+        self.mod_info_edit.setVisible(False)
+        self.mod_info_label.setVisible(False)
+        self.is_mod_check.toggled.connect(self._set_mod_fields_visible)
+        mod_row.addWidget(self.is_mod_check)
+        mod_row.addWidget(self.mod_info_label)
+        mod_row.addWidget(self.mod_info_edit, 1)
+        layout.addLayout(mod_row)
+
         self.confirm_check = QCheckBox(
             "我已检查勾选的截图和录屏代表帧/完整回放，确认均属于本次应用取证"
         )
@@ -1224,6 +1239,14 @@ class MediaReviewDialog(QDialog):
         )
         if path:
             self.restriction_edit.setText(path)
+
+    def _set_mod_fields_visible(self, is_mod: bool) -> None:
+        self.mod_info_label.setVisible(is_mod)
+        self.mod_info_edit.setVisible(is_mod)
+        if is_mod:
+            self.mod_info_edit.setFocus()
+        else:
+            self.mod_info_edit.clear()
 
     def _open_recording(self) -> None:
         path = str(self.review.get("localRecordingPath") or "")
@@ -1272,6 +1295,7 @@ class MediaReviewDialog(QDialog):
         visibility = str(self.visibility_combo.currentData() or "")
         frames = list(self.review.get("recordingFrames") or [])
         output_root = self.output_edit.text().strip()
+        mod_info = self.mod_info_edit.text().strip()
         if not selected and not restriction:
             QMessageBox.information(
                 self,
@@ -1281,6 +1305,13 @@ class MediaReviewDialog(QDialog):
             return
         if not output_root:
             QMessageBox.information(self, "请选择保存位置", "请选择最终证据包保存根目录。")
+            return
+        if self.is_mod_check.isChecked() and mod_info and not mod_info.isascii():
+            QMessageBox.information(
+                self,
+                "modInfo 需要英文",
+                "请使用英文填写 MOD 信息，例如：MOD, Unlocked Content。",
+            )
             return
         if visibility != "visible" and not frames:
             QMessageBox.information(
@@ -1315,6 +1346,11 @@ class MediaReviewDialog(QDialog):
             "contentVisibility": visibility,
             "reviewMethod": review_method,
             "operatorReportedProtectedMedia": protected,
+            "isMod": self.is_mod_check.isChecked(),
+            "packageVariant": "mod" if self.is_mod_check.isChecked() else "original",
+            "modInfo": self.mod_info_edit.text().strip()
+            if self.is_mod_check.isChecked()
+            else "",
             "outputRoot": self.output_edit.text().strip(),
         }
 

@@ -199,10 +199,45 @@ def test_finalize_builds_and_validates_schema3_package(tmp_path: Path) -> None:
     assert observations["media"]["screenshot_count"] == 1
     assert observations["media"]["recording"]["content_visibility"] == "visible"
     assert observations["source"]["sha256"] == observations["source"]["copied_source_sha256"]
+    assert observations["isMod"] is False
+    assert observations["packageVariant"] == "original"
+    assert observations["modInfo"] == ""
+    assert result["isMod"] is False
+    assert result["packageVariant"] == "original"
+    assert result["modInfo"] == ""
     assert (package / "_READY").read_bytes() == b""
     assert (package / "videos" / "raw_install_test.mp4").is_file()
     assert not (bundle / ".apkba-pending-session.json").exists()
     assert all(serial == "PHONE-FINISH" for serial, _arguments in adb.calls)
+
+
+def test_finalize_persists_manual_mod_details_for_hello_neighbor(tmp_path: Path) -> None:
+    bundle, remote_files = make_finish_bundle(tmp_path)
+    pending_path = bundle / ".apkba-pending-session.json"
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending["app"]["application_label"] = "Hello Neighbor"
+    pending_path.write_text(json.dumps(pending), encoding="utf-8")
+
+    result = finalize_evidence(
+        bundle,
+        ["/sdcard/DCIM/Screenshots/Screenshot_Example.png"],
+        "/sdcard/DCIM/Screen recordings/Example.mp4",
+        content_visibility="visible",
+        review_method="operator_confirmed_playback",
+        is_mod=True,
+        mod_info="MOD, Unlocked Content",
+        adb=FakeFinishAdb(remote_files),
+    )
+
+    observations = json.loads(
+        (Path(result["packagePath"]) / "observations.json").read_text(encoding="utf-8")
+    )
+    assert observations["isMod"] is True
+    assert observations["packageVariant"] == "mod"
+    assert observations["modInfo"] == "MOD, Unlocked Content"
+    assert result["isMod"] is True
+    assert result["packageVariant"] == "mod"
+    assert result["modInfo"] == "MOD, Unlocked Content"
 
 
 def test_finalize_accepts_non_square_icon_and_records_dimensions(tmp_path: Path) -> None:

@@ -126,6 +126,44 @@ def test_media_review_uses_the_edited_screenshot_copy(
     dialog.close()
 
 
+def test_media_review_collects_manual_mod_information(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    screenshot = tmp_path / "screenshot.png"
+    image = QImage(16, 16, QImage.Format.Format_ARGB32)
+    image.fill(QColor("#087763"))
+    assert image.save(str(screenshot))
+    dialog = MediaReviewDialog(
+        {
+            "screenshots": [
+                {
+                    "remote_path": "/sdcard/DCIM/Screenshots/Fixture.png",
+                    "file_name": "Fixture.png",
+                    "localPath": str(screenshot),
+                }
+            ],
+            "recordingFrames": [],
+            "visibilitySuggestion": "visible",
+        },
+        str(tmp_path),
+    )
+
+    assert dialog.mod_info_edit.isHidden()
+    dialog.is_mod_check.setChecked(True)
+    dialog.mod_info_edit.setText("MOD, Unlocked Content")
+
+    assert not dialog.mod_info_edit.isHidden()
+    assert dialog.choices()["isMod"] is True
+    assert dialog.choices()["packageVariant"] == "mod"
+    assert dialog.choices()["modInfo"] == "MOD, Unlocked Content"
+
+    dialog.is_mod_check.setChecked(False)
+    assert dialog.choices()["isMod"] is False
+    assert dialog.choices()["packageVariant"] == "original"
+    assert dialog.choices()["modInfo"] == ""
+    dialog.close()
+
+
 def test_media_review_is_landscape_and_previews_are_clickable(
     qt_app: QApplication, tmp_path: Path
 ) -> None:

@@ -1296,6 +1296,14 @@ class MediaReviewDialog(QDialog):
         frames = list(self.review.get("recordingFrames") or [])
         output_root = self.output_edit.text().strip()
         mod_info = self.mod_info_edit.text().strip()
+        recording_path = Path(str(self.review.get("localRecordingPath") or ""))
+        if not recording_path.is_file():
+            QMessageBox.information(
+                self,
+                "缺少录屏",
+                "未检测到录屏，请先完成录屏后重试。",
+            )
+            return
         if not selected and not restriction:
             QMessageBox.information(
                 self,

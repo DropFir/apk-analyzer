@@ -241,6 +241,42 @@ def test_media_review_checks_every_bounded_screenshot_by_default(
     dialog.close()
 
 
+def test_media_review_blocks_final_click_when_recording_file_is_missing(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    screenshot = tmp_path / "screenshot.png"
+    pixmap = QPixmap(360, 720)
+    pixmap.fill(QColor("#087763"))
+    assert pixmap.save(str(screenshot))
+    review = {
+        "screenshots": [
+            {
+                "remote_path": "/sdcard/DCIM/Screenshots/Fixture.png",
+                "file_name": "Fixture.png",
+                "localPath": str(screenshot),
+            }
+        ],
+        "localRecordingPath": str(tmp_path / "missing.mp4"),
+        "recordingFrames": [],
+        "visibilitySuggestion": "visible",
+    }
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *args, **kwargs: messages.append(args),
+    )
+    dialog = MediaReviewDialog(review, str(tmp_path))
+    dialog.confirm_check.setChecked(True)
+
+    dialog._validate_and_accept()
+
+    assert dialog.result() == 0
+    assert messages
+    assert messages[-1][1:] == ("缺少录屏", "未检测到录屏，请先完成录屏后重试。")
+    dialog.close()
+
+
 def test_media_review_defaults_to_three_screenshot_columns(
     qt_app: QApplication,
     tmp_path: Path,

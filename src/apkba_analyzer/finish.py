@@ -499,7 +499,11 @@ def validate_evidence_package(package: Path, expected_source_hash: str) -> dict[
         raise ScanFailure("证据包缺少有效的 isMod 标记。")
     if package_variant != ("mod" if is_mod else "original"):
         raise ScanFailure("证据包的 packageVariant 与 isMod 不一致。")
-    if not isinstance(mod_info, str) or (not is_mod and mod_info):
+    if (
+        not isinstance(mod_info, str)
+        or (not is_mod and mod_info)
+        or (is_mod and (not mod_info.strip() or not mod_info.isascii()))
+    ):
         raise ScanFailure("证据包的 modInfo 无效。")
     source_root = package / "source_package"
     screenshots_root = package / "screenshots"
@@ -624,6 +628,10 @@ def finalize_evidence(
     is_mod = bool(is_mod)
     normalized_mod_info = str(mod_info).strip() if is_mod else ""
     package_variant = "mod" if is_mod else "original"
+    if is_mod and not normalized_mod_info:
+        raise ScanFailure("MOD 取证包必须填写英文 modInfo。")
+    if is_mod and not normalized_mod_info.isascii():
+        raise ScanFailure("MOD 取证包的 modInfo 必须使用英文。")
     if operator_reported_protected_media:
         if content_visibility == "visible":
             raise ScanFailure("已报告黑屏/受保护内容时不能选择“可见”。")

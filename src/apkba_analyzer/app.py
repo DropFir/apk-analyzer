@@ -1314,7 +1314,14 @@ class MediaReviewDialog(QDialog):
         if not output_root:
             QMessageBox.information(self, "请选择保存位置", "请选择最终证据包保存根目录。")
             return
-        if self.is_mod_check.isChecked() and mod_info and not mod_info.isascii():
+        if self.is_mod_check.isChecked() and not mod_info:
+            QMessageBox.information(
+                self,
+                "需要 MOD 信息",
+                "勾选 MOD 后请填写英文 modInfo，例如：MOD, Unlocked Content。",
+            )
+            return
+        if self.is_mod_check.isChecked() and not mod_info.isascii():
             QMessageBox.information(
                 self,
                 "modInfo 需要英文",

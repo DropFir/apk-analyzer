@@ -141,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "finish":
             if args.mod_info and not args.mod:
                 raise ScanFailure("--mod-info 需要与 --mod 一起使用。")
+            if args.mod and not args.mod_info.strip():
+                raise ScanFailure("--mod 需要同时提供英文 --mod-info。")
             missing_frames = [path for path in args.review_frame if not path.is_file()]
             if missing_frames:
                 raise ScanFailure(f"代表帧不存在：{missing_frames[0]}")

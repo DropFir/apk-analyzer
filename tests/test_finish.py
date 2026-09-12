@@ -240,6 +240,21 @@ def test_finalize_persists_manual_mod_details_for_hello_neighbor(tmp_path: Path)
     assert result["modInfo"] == "MOD, Unlocked Content"
 
 
+def test_finalize_rejects_mod_without_english_mod_info(tmp_path: Path) -> None:
+    bundle, remote_files = make_finish_bundle(tmp_path)
+
+    with pytest.raises(ScanFailure, match="MOD 取证包必须填写英文 modInfo"):
+        finalize_evidence(
+            bundle,
+            ["/sdcard/DCIM/Screenshots/Screenshot_Example.png"],
+            "/sdcard/DCIM/Screen recordings/Example.mp4",
+            content_visibility="visible",
+            review_method="operator_confirmed_playback",
+            is_mod=True,
+            adb=FakeFinishAdb(remote_files),
+        )
+
+
 def test_finalize_accepts_non_square_icon_and_records_dimensions(tmp_path: Path) -> None:
     bundle, remote_files = make_finish_bundle(tmp_path)
     Image.new("RGB", (512, 320), "#087763").save(bundle / "icon.png")
